@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vergeclip — 1-Click AI Viral Shorts Generator</title>
+  <meta name="description" content="Turn any podcast or YouTube video into high-converting 9:16 viral shorts with AI face tracking and synchronized captions." />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎙️</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body class="app-body">
+
+  <!-- ─── Top Navbar ────────────────────────────────────────────────── -->
+  <header class="app-nav">
+    <div class="app-nav-inner">
+      <div class="nav-left">
+        <a href="index.html" class="nav-logo">
+          <span class="logo-icon">🎙️</span>
+          <span class="logo-text">Verge<span class="logo-accent">clip</span></span>
+        </a>
+        <nav>
+          <ul class="nav-links">
+            <li><a href="#generator" class="nav-link active">⚡ Generator</a></li>
+            <li><a href="#gallerySection" class="nav-link">🎬 Gallery</a></li>
+            <li><a href="#howItWorks" class="nav-link">✨ How It Works</a></li>
+          </ul>
+        </nav>
+      </div>
+
+      <div class="nav-right">
+        <!-- Backend Status Pill -->
+        <div class="status-pill" id="backendPill" onclick="promptBackendUrl()" title="Click to change Backend Server URL">
+          <span class="status-dot green" id="serverDot"></span>
+          <span id="serverLbl">Backend Connected</span>
+        </div>
+
+        <!-- Auth Control Box -->
+        <div id="authBox">
+          <div id="authLoggedOut" style="display:flex; gap:0.6rem; align-items:center;">
+            <a href="login.html" class="btn-outline btn-sm">Sign In</a>
+            <a href="signup.html" class="btn-primary btn-sm">Sign Up</a>
+          </div>
+          <div id="authLoggedIn" style="display:none; align-items:center; gap:0.75rem;">
+            <div class="user-badge-pill">
+              <span class="user-avatar-circle" id="userAvatar">U</span>
+              <span style="font-size:0.85rem; font-weight:600; color:var(--text-main);" id="authUserName">User</span>
+            </div>
+            <button class="btn-outline btn-sm btn-danger-outline" onclick="handleLogout()">Logout</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ─── Main Content Container ────────────────────────────────────── -->
+  <main class="single-page-container">
+
+    <!-- ── 1. Hero 1-Click Generator Card ── -->
+    <section class="hero-generator-card" id="generator">
+      <div class="hero-badge">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        1-Click Video to Shorts Engine
+      </div>
+      
+      <h1 class="hero-title">Turn Any Long Video into <br><span class="gradient-text">Viral 9:16 Shorts</span></h1>
+      
+      <p class="hero-subtitle">
+        Paste your YouTube URL below. Our AI automatically discovers the most engaging moments, tracks faces in 9:16 frame, and burns word-level animated captions.
+      </p>
+
+      <!-- Mode Switcher Tabs -->
+      <div style="display:inline-flex; gap:0.5rem; background:rgba(255,255,255,0.04); padding:0.35rem; border-radius:var(--radius-pill); border:1px solid var(--border-subtle); margin-bottom:0.5rem;">
+        <button id="tabModeUrl" class="btn-primary btn-sm" onclick="switchGenMode('url')">
+          🔗 YouTube URL to Shorts
+        </button>
+        <button id="tabModeTopic" class="btn-outline btn-sm" onclick="switchGenMode('topic')">
+          💡 AI Prompt / Topic (No Video Needed)
+        </button>
+      </div>
+
+      <!-- Mode 1: YouTube URL Input Form -->
+      <div id="modeUrlWrap" class="url-input-container" style="width:100%;">
+        <div class="url-input-wrap">
+          <svg class="url-icon" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33A2.78 2.78 0 0 0 3.4 19c1.72.46 8.6.46 8.6.46s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.25 29 29 0 0 0-.46-5.33z"/>
+            <polygon points="9.75 15.02 15.5 11.75 9.75 8.48 9.75 15.02" fill="currentColor"/>
+          </svg>
+          <input 
+            id="ytUrl" 
+            type="url" 
+            placeholder="Paste YouTube video link..." 
+            class="url-input" 
+            autocomplete="off"
+          />
+          <div class="url-action-buttons">
+            <button class="btn-primary btn-generate" id="autoGenerateBtn" onclick="startAutoGenerate()">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+              Generate Shorts
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Mode 2: Topic / Prompt Input Form (No Video Needed) -->
+      <div id="modeTopicWrap" class="url-input-container" style="display:none; width:100%; flex-direction:column; gap:1rem;">
+        <div style="display:flex; flex-direction:column; gap:0.75rem; width:100%; background:rgba(6, 8, 14, 0.85); border:1px solid var(--border-medium); border-radius:var(--radius-lg); padding:1.5rem; text-align:left;">
+          <div>
+            <label class="auth-label" style="font-size:0.85rem;">What short do you want to create? (Topic / Question / Idea)</label>
+            <input id="topicInput" class="admin-input" placeholder="e.g. 5 Psychological Tricks to Read Anyone in 3 Seconds" style="font-size:1rem; padding:0.9rem 1.1rem;" />
+          </div>
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:1rem;">
+            <div>
+              <label class="auth-label" style="font-size:0.82rem;">Niche / Theme</label>
+              <select id="topicNiche" class="admin-input" style="cursor:pointer;">
+                <option value="Mindset & Psychology">🧠 Psychology & Mindset</option>
+                <option value="Business & Money">💰 Business & Money</option>
+                <option value="AI & Future Tech">🚀 AI & Future Tech</option>
+                <option value="Fitness & Health">💪 Fitness & Health</option>
+                <option value="Storytelling & Facts">🎬 Fascinating Facts</option>
+              </select>
+            </div>
+            <div>
+              <label class="auth-label" style="font-size:0.82rem;">Tone & Style</label>
+              <select id="topicTone" class="admin-input" style="cursor:pointer;">
+                <option value="High Energy Viral">⚡ High Energy Viral</option>
+                <option value="Mysterious Storytelling">🕵️ Mysterious Storytelling</option>
+                <option value="Educational Expert">🎓 Educational Expert</option>
+                <option value="Motivational & Bold">🔥 Motivational & Bold</option>
+              </select>
+            </div>
+            <div>
+              <label class="auth-label" style="font-size:0.82rem;">Target Duration</label>
+              <select id="topicDuration" class="admin-input" style="cursor:pointer;">
+                <option value="30">⚡ 30 Seconds (Fast Hook)</option>
+                <option value="45" selected>⏱️ 45 Seconds (Recommended)</option>
+                <option value="60">🎬 60 Seconds (Deep Dive)</option>
+              </select>
+            </div>
+          </div>
+          <div style="display:flex; justify-content:flex-end; margin-top:0.5rem;">
+            <button class="btn-primary btn-generate" onclick="generateFromTopic()" style="min-width:240px;">
+              ✨ Generate Viral AI Script
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Feature Badges -->
+      <div class="features-pills-row">
+        <span class="feat-pill">🎯 Smart Face Centering</span>
+        <span class="feat-pill">💬 Word-by-Word Captions</span>
+        <span class="feat-pill">🧠 AI Hook Detection</span>
+        <span class="feat-pill">📱 9:16 Vertical HD</span>
+        <span class="feat-pill">⚡ 100% Automated</span>
+      </div>
+    </section>
+
+    <!-- ── 2. Live Generation Progress Card ── -->
+    <section class="pipeline-card" id="pipelineMonitorCard" style="display:none;">
+      <div class="card-header-pipeline">
+        <div class="pipeline-header-left">
+          <div class="status-indicator-spinner" id="monitorSpinner"></div>
+          <div>
+            <h2 class="pipeline-title" id="monitorTitle">Creating Your Viral Shorts...</h2>
+            <p class="pipeline-subtitle" id="monitorSubtitle">Analyzing transcript, ranking hooks, centering speakers, and generating captions.</p>
+          </div>
+        </div>
+        <div id="liveTimerBadge" class="status-pill">
+          <span>⏱️ Processing</span>
+        </div>
+      </div>
+
+      <!-- 5-Phase Stepper Tracker -->
+      <div class="stepper-phases">
+        <div class="stepper-step active" id="step-download">
+          <span class="stepper-step-icon">📥</span>
+          <span class="stepper-step-label">1. Download</span>
+        </div>
+        <div class="stepper-step" id="step-transcribe">
+          <span class="stepper-step-icon">🎙️</span>
+          <span class="stepper-step-label">2. Transcribe</span>
+        </div>
+        <div class="stepper-step" id="step-select">
+          <span class="stepper-step-icon">✂️</span>
+          <span class="stepper-step-label">3. Select Clips</span>
+        </div>
+        <div class="stepper-step" id="step-rank">
+          <span class="stepper-step-icon">🧠</span>
+          <span class="stepper-step-label">4. AI Ranking</span>
+        </div>
+        <div class="stepper-step" id="step-render">
+          <span class="stepper-step-icon">🎬</span>
+          <span class="stepper-step-label">5. 9:16 Render</span>
+        </div>
+      </div>
+
+      <!-- Progress bar -->
+      <div class="progress-track">
+        <div class="progress-bar" id="monitorProgressBar" style="width: 5%;"></div>
+      </div>
+      <div class="progress-meta-row">
+        <span id="monitorPhaseText">Phase 1/5: Downloading source video...</span>
+        <span id="monitorPercentText">5%</span>
+      </div>
+
+      <!-- Live Terminal Log Box -->
+      <div class="terminal-log-box">
+        <div class="terminal-header">
+          <div class="terminal-dots">
+            <span class="t-dot r"></span>
+            <span class="t-dot y"></span>
+            <span class="t-dot g"></span>
+          </div>
+          <span>LIVE PIPELINE LOGS</span>
+          <span style="font-size:0.7rem; color:var(--text-faint);">AUTO-SCROLL ON</span>
+        </div>
+        <div class="phase-log" id="monitorLiveLog">> Initializing pipeline engine...</div>
+      </div>
+    </section>
+
+    <!-- ── 3. "How It Works" 4-Step Cards ── -->
+    <section class="how-it-works-section" id="howItWorks">
+      <div class="section-title-wrap">
+        <div class="section-badge">Streamlined Workflow</div>
+        <h2 class="section-main-title">From URL to Viral Shorts in Seconds</h2>
+      </div>
+
+      <div class="steps-grid">
+        <div class="step-card">
+          <div class="step-number">01</div>
+          <div class="step-icon">🔗</div>
+          <h3 class="step-title">Paste Long Video</h3>
+          <p class="step-desc">Provide any YouTube podcast or video URL. Our pipeline ingests high-definition source video in seconds.</p>
+        </div>
+
+        <div class="step-card">
+          <div class="step-number">02</div>
+          <div class="step-icon">🎙️</div>
+          <h3 class="step-title">Speech-to-Text & Hooks</h3>
+          <p class="step-desc">Whisper / AssemblyAI transcribes every single word with microsecond timestamps and speaker diarization.</p>
+        </div>
+
+        <div class="step-card">
+          <div class="step-number">03</div>
+          <div class="step-icon">🧠</div>
+          <h3 class="step-title">Semantic AI Ranker</h3>
+          <p class="step-desc">Advanced LLMs score hooks, virality, emotional peaks, and coherence to select the most shareable 30–60s segments.</p>
+        </div>
+
+        <div class="step-card">
+          <div class="step-number">04</div>
+          <div class="step-icon">✨</div>
+          <h3 class="step-title">Face Tracking & Export</h3>
+          <p class="step-desc">FFmpeg auto-crops to 9:16 vertical frame with dynamic face centering and animated karaoke subtitles.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── 4. Generated Shorts Gallery ── -->
+    <section class="gallery-section" id="gallerySection">
+      <div class="section-header-row">
+        <div>
+          <h2 class="section-title">🎬 Generated Shorts Gallery</h2>
+          <p class="section-sub">All rendered 9:16 vertical clips are ready to preview, download, and share across TikTok, Reels, and Shorts.</p>
+        </div>
+        <div class="gallery-actions">
+          <button class="btn-outline btn-sm" onclick="refreshOutputs();">
+            ↻ Refresh
+          </button>
+          <button class="btn-outline btn-sm btn-danger-outline" onclick="clearAllOutputs();">
+            🗑️ Clear All
+          </button>
+        </div>
+      </div>
+
+      <div class="clips-grid" id="clipsGrid">
+        <!-- Rendered clips populated dynamically by JavaScript -->
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ─── Video Preview Modal ────────────────────────────────────────── -->
+  <div class="video-modal-backdrop" id="videoModal" style="display:none;" onclick="closeVideoModal(event)">
+    <div class="video-modal-content" onclick="event.stopPropagation()">
+      <div class="video-modal-header">
+        <h3 id="modalVideoTitle" class="modal-title">Short Preview</h3>
+        <button class="modal-close-btn" onclick="closeVideoModal()">✕</button>
+      </div>
+      <div class="video-modal-body">
+        <video id="modalVideoPlayer" class="modal-video" controls autoplay playsinline></video>
+      </div>
+      <div class="video-modal-footer">
+        <span style="font-size:0.8rem; color:var(--text-muted);">9:16 Vertical HD</span>
+        <a id="modalDownloadBtn" class="btn-primary btn-sm" href="#" download>
+          ⬇️ Download Short
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Toast Notifications Container ──────────────────────────────── -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- ─── Modern Comprehensive Footer ─────────────────────────────────── -->
+  <footer class="app-footer">
+    <div class="footer-inner">
+      <div class="footer-top-grid">
+        <div class="footer-brand-col">
+          <a href="index.html" class="nav-logo">
+            <span class="logo-icon">🎙️</span>
+            <span class="logo-text">Verge<span class="logo-accent">clip</span></span>
+          </a>
+          <p class="footer-tagline">
+            Automated AI pipeline for turning long-form podcasts, webinars, and interviews into high-retention 9:16 viral short clips.
+          </p>
+          <div class="footer-status-pill">
+            <span class="status-dot green"></span>
+            <span>All Systems Operational</span>
+          </div>
+        </div>
+
+        <div>
+          <h4 class="footer-col-title">Navigation</h4>
+          <ul class="footer-links">
+            <li><a href="#generator" class="footer-link">⚡ 1-Click Generator</a></li>
+            <li><a href="#gallerySection" class="footer-link">🎬 Shorts Gallery</a></li>
+            <li><a href="#howItWorks" class="footer-link">✨ How It Works</a></li>
+          </ul>
+        </div>
+
+        <div>
+          <h4 class="footer-col-title">Features</h4>
+          <ul class="footer-links">
+            <li><a href="javascript:void(0)" class="footer-link">Face Centered 9:16</a></li>
+            <li><a href="javascript:void(0)" class="footer-link">Animated Captions</a></li>
+            <li><a href="javascript:void(0)" class="footer-link">Viral Hook Scoring</a></li>
+            <li><a href="javascript:void(0)" class="footer-link">Whisper Diarization</a></li>
+          </ul>
+        </div>
+
+        <div>
+          <h4 class="footer-col-title">Account</h4>
+          <ul class="footer-links">
+            <li><a href="login.html" class="footer-link">Sign In</a></li>
+            <li><a href="signup.html" class="footer-link">Create Account</a></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="footer-bottom-bar">
+        <span>© 2026 Vergeclip AI. All rights reserved.</span>
+        <span>Built with FastAPI, Whisper, OpenCV & FFmpeg</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="auth.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

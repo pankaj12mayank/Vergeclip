@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.env
+data/users.db
+!data/.gitkeep
+# Media
+input/*.mp4
+input/*.mkv
+input/*.mov
+input/*.webm
+output/*.mp4
+temp/
+logs/
+!logs/.gitkeep
+*.log
+# OS
+.DS_Store
+Thumbs.db
+# Node
+node_modules/

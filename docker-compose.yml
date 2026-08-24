@@ -1,0 +1,25 @@
+version: "3.8"
+
+services:
+  podcast-shorts:
+    build: .
+    container_name: podcast_shorts_app
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - PORT=5000
+      - HOST=0.0.0.0
+      - VIDEOSAILOR_API_KEY=${VIDEOSAILOR_API_KEY:-}
+      - ASSEMBLYAI_API_KEY=${ASSEMBLYAI_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - RANKING_PROVIDER=${RANKING_PROVIDER:-gemini}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-}
+      - AUTH_REQUIRED=${AUTH_REQUIRED:-false}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+    volumes:
+      - ./input:/app/input
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./data:/app/data

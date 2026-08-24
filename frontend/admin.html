@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin Portal — Vergeclip</title>
+  <meta name="description" content="Manage Vergeclip AI configuration, models, prompt templates, users, queues, and quotas." />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎙️</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body class="app-body">
+
+  <div class="admin-layout-container">
+    
+    <!-- Mobile Sidebar Backdrop -->
+    <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="toggleAdminSidebar(false)"></div>
+
+    <!-- ─── 1. Admin Sidebar Navigation Bar ────────────────────────────── -->
+    <aside class="admin-sidebar" id="adminSidebar">
+      <div>
+        <div class="admin-sidebar-header">
+          <a href="index.html" class="nav-logo">
+            <span class="logo-icon">🎙️</span>
+            <span class="logo-text">Verge<span class="logo-accent">clip</span></span>
+          </a>
+          <button class="sidebar-toggle-btn" onclick="toggleAdminSidebar(false)" style="width:30px; height:30px; display:inline-flex;">✕</button>
+        </div>
+
+        <nav>
+          <ul class="admin-nav-menu">
+            <li>
+              <button class="admin-nav-item-btn active" data-tab="config" onclick="switchTab('config')">
+                <span class="admin-nav-icon">⚙️</span>
+                <span>Config & AI Models</span>
+              </button>
+            </li>
+            <li>
+              <button class="admin-nav-item-btn" data-tab="prompts" onclick="switchTab('prompts')">
+                <span class="admin-nav-icon">🧠</span>
+                <span>Prompts & Pipelines</span>
+              </button>
+            </li>
+            <li>
+              <button class="admin-nav-item-btn" data-tab="users" onclick="switchTab('users')">
+                <span class="admin-nav-icon">👥</span>
+                <span>User Accounts</span>
+              </button>
+            </li>
+            <li>
+              <button class="admin-nav-item-btn" data-tab="jobs" onclick="switchTab('jobs')">
+                <span class="admin-nav-icon">🎬</span>
+                <span>Job Queue</span>
+              </button>
+            </li>
+            <li>
+              <button class="admin-nav-item-btn" data-tab="quota" onclick="switchTab('quota')">
+                <span class="admin-nav-icon">📊</span>
+                <span>Quota & Limits</span>
+              </button>
+            </li>
+            <li>
+              <button class="admin-nav-item-btn" data-tab="audit" onclick="switchTab('audit')">
+                <span class="admin-nav-icon">📝</span>
+                <span>Live Audit & Logs</span>
+              </button>
+            </li>
+          </ul>
+        </nav>
+      </div>
+
+      <!-- Sidebar Bottom Info & Actions -->
+      <div class="admin-sidebar-footer">
+        <div class="admin-user-card">
+          <span class="user-avatar-circle" style="background:var(--grad-primary);">🛡️</span>
+          <div style="display:flex; flex-direction:column; overflow:hidden;">
+            <span id="adminUserBadge" style="font-size:0.85rem; font-weight:700; color:#fff; text-overflow:ellipsis; white-space:nowrap; overflow:hidden;">System Owner</span>
+            <span style="font-size:0.75rem; color:var(--green); font-weight:600;">Full Super-Admin Access</span>
+          </div>
+        </div>
+
+        <div class="admin-sidebar-actions">
+          <a href="index.html" class="btn-outline btn-sm" style="flex:1;">← Back to App</a>
+          <button class="btn-outline btn-sm btn-danger-outline" onclick="handleLogout()" title="Sign Out">Logout</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ─── 2. Main Content Area ───────────────────────────────────────── -->
+    <div class="admin-main-content">
+      
+      <!-- Topbar Header -->
+      <header class="admin-topbar">
+        <div class="admin-topbar-left">
+          <button class="sidebar-toggle-btn" onclick="toggleAdminSidebar(true)" title="Open Sidebar Menu">☰</button>
+          <div>
+            <h1 class="brand-font" id="currentSectionTitle" style="font-size:1.35rem; font-weight:800;">⚙️ Config & AI Models</h1>
+            <span id="adminStatus" style="font-size:0.78rem; color:var(--cyan); font-weight:600;"></span>
+          </div>
+        </div>
+
+        <div style="display:flex; gap:0.75rem; align-items:center;">
+          <button class="btn-outline btn-sm" onclick="loadAll()">↻ Sync All</button>
+        </div>
+      </header>
+
+      <!-- Main Body Container -->
+      <main class="admin-content-body">
+        
+        <!-- ── KPI Summary Cards ── -->
+        <div class="admin-kpi-grid">
+          <div class="kpi-card">
+            <div class="kpi-icon">🔑</div>
+            <div>
+              <div class="kpi-val" id="kpi-keys">4 / 5</div>
+              <div class="kpi-label">API Keys Configured</div>
+            </div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-icon">🧠</div>
+            <div>
+              <div class="kpi-val" id="kpi-prompts">6 Active</div>
+              <div class="kpi-label">AI Pipelines</div>
+            </div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-icon">👥</div>
+            <div>
+              <div class="kpi-val" id="kpi-users">—</div>
+              <div class="kpi-label">Client Users</div>
+            </div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-icon">🎬</div>
+            <div>
+              <div class="kpi-val" id="kpi-jobs">—</div>
+              <div class="kpi-label">Queue Tasks</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── 1. Config & Keys Tab ── -->
+        <section id="panel-config" class="admin-panel active">
+          
+          <!-- Custom OpenAI-Compatible LLM Configurator -->
+          <div class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3 class="admin-card-title">🤖 OpenAI-Compatible Custom AI Provider</h3>
+                <p class="admin-card-desc">Connect any LLM endpoint (Groq, DeepSeek, OpenRouter, vLLM, Ollama, LMStudio) as your primary video ranking & script engine.</p>
+              </div>
+            </div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:1rem;">
+              <div>
+                <label class="auth-label">Primary AI Provider</label>
+                <select id="ai_provider_select" class="admin-input">
+                  <option value="gemini">Google Gemini (Gemini 2.5 Flash - Default)</option>
+                  <option value="openai">OpenAI (GPT-4o-mini / GPT-4o)</option>
+                  <option value="custom_openai">Custom OpenAI-Compatible Endpoint</option>
+                  <option value="ollama">Ollama (Local / Self-Hosted)</option>
+                </select>
+              </div>
+              <div>
+                <label class="auth-label">API Base URL</label>
+                <input id="custom_ai_base_url" class="admin-input" placeholder="e.g. https://api.groq.com/openai/v1 or https://openrouter.ai/api/v1" />
+              </div>
+              <div>
+                <label class="auth-label">Model Identifier</label>
+                <input id="custom_ai_model" class="admin-input" placeholder="e.g. llama-3.3-70b-versatile or deepseek-r1" />
+              </div>
+              <div>
+                <label class="auth-label">Custom API Key</label>
+                <div style="position:relative; display:flex; align-items:center;">
+                  <input id="custom_ai_api_key" type="password" class="admin-input" placeholder="sk-..." style="padding-right:2.5rem;" />
+                  <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('custom_ai_api_key', this)" style="right:10px;">👁️</button>
+                </div>
+              </div>
+            </div>
+            <div style="display:flex; justify-content:flex-end; gap:0.75rem; margin-top:1.25rem;">
+              <button class="btn-outline btn-sm" onclick="testCustomAI()">⚡ Test Live LLM Connection</button>
+              <button class="btn-primary btn-sm" onclick="saveCustomAI()">💾 Save & Set as Primary AI</button>
+            </div>
+            <div id="custom_ai_test_output" style="display:none; margin-top:1rem; padding:0.9rem; background:#07090e; border-radius:8px; font-size:0.85rem; border:1px solid var(--border-subtle);"></div>
+          </div>
+
+          <div class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3 class="admin-card-title">🔑 Individual Core API Keys</h3>
+                <p class="admin-card-desc">Configure AssemblyAI, VideoSailor, Google, and OpenAI keys with live connection verification.</p>
+              </div>
+            </div>
+            <div id="configKeys" style="display:flex; flex-direction:column; gap:1rem;"></div>
+          </div>
+
+          <div class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3 class="admin-card-title">⚙️ System Limits & Storage Directory</h3>
+                <p class="admin-card-desc">Tune concurrency limits, video duration ceilings, and output directories.</p>
+              </div>
+            </div>
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:1.25rem;" id="configLimits"></div>
+          </div>
+        </section>
+
+        <!-- ── 2. Prompts Tab ── -->
+        <section id="panel-prompts" class="admin-panel">
+          <div class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3 class="admin-card-title">🧠 Specialized AI Prompt Pipelines</h3>
+                <p class="admin-card-desc">All production prompt templates driving viral hook scoring, diarization, caption styling, and SEO metadata generation.</p>
+              </div>
+            </div>
+            <div id="promptsList" style="display:flex; flex-direction:column; gap:1rem;"></div>
+          </div>
+        </section>
+
+        <!-- ── 3. Users Tab ── -->
+        <section id="panel-users" class="admin-panel">
+          <div class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3 class="admin-card-title">👥 User Management</h3>
+                <p class="admin-card-desc">View registered client accounts, suspend/activate access, set individual monthly limits, and manage records.</p>
+              </div>
+            </div>
+            <div class="admin-table-container">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Username</th>
+                    <th>Email Address</th>
+                    <th>Status</th>
+                    <th>Plan Tier</th>
+                    <th>Joined</th>
+                    <th style="text-align:right;">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="usersTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- ── 4. Jobs Tab ── -->
+        <section id="panel-jobs" class="admin-panel">
+          <div class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3 class="admin-card-title">🎬 Pipeline Job Queue</h3>
+                <p class="admin-card-desc">Real-time status of all active, queued, and completed video generation tasks.</p>
+              </div>
+            </div>
+            <div class="admin-table-container">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th>Job ID</th>
+                    <th>User</th>
+                    <th>Source URL</th>
+                    <th>Status</th>
+                    <th>Progress</th>
+                    <th>Timestamp</th>
+                  </tr>
+                </thead>
+                <tbody id="jobsTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- ── 5. Quota Tab ── -->
+        <section id="panel-quota" class="admin-panel">
+          
+          <div class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3 class="admin-card-title">👑 System Owner Unlimited Allowance</h3>
+                <p class="admin-card-desc">The System Owner account operates with unlimited quota and zero rate-limiting.</p>
+              </div>
+            </div>
+            <div id="quotaInfo" style="margin-top:0.5rem;"></div>
+          </div>
+
+          <div class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3 class="admin-card-title">🔄 Guest Device Trials Management</h3>
+                <p class="admin-card-desc">Reset all guest trial device fingerprints and IP allowances so unregistered visitors can try creating shorts again.</p>
+              </div>
+              <button class="btn-primary btn-sm" onclick="resetGuestTrials()">🔄 1-Click Reset All Guest Trials</button>
+            </div>
+            <p style="font-size:0.85rem; color:var(--text-muted);">Guest users receive 1 free trial short per device/IP. Click above to purge all trial tracking locks.</p>
+          </div>
+        </section>
+
+        <!-- ── 6. Audit Tab ── -->
+        <section id="panel-audit" class="admin-panel">
+          <div class="admin-card">
+            <div class="admin-card-header" style="flex-wrap:wrap; gap:1rem;">
+              <div>
+                <h3 class="admin-card-title">📝 Real-Time System & User Audit Log Stream</h3>
+                <p class="admin-card-desc">Live streaming events for user actions, auth sign-ins, video pipeline lifecycle, AI calls, and technical errors.</p>
+              </div>
+              <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center;">
+                <button id="btnDeleteAuditBatch" class="btn-outline btn-sm btn-danger-outline" style="display:none;" onclick="deleteSelectedAuditLogs()">
+                  🗑️ Delete Selected (<span id="selectedAuditCount">0</span>)
+                </button>
+                <button class="btn-outline btn-sm" onclick="clearAllAuditLogs()" title="Purge all audit logs">
+                  ⚠️ Clear All Logs
+                </button>
+                <button class="btn-primary btn-sm" onclick="loadAudit(true)">↻ Live Sync</button>
+              </div>
+            </div>
+
+            <!-- Audit Filter & Per Page Bar -->
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem; margin-bottom:1rem; padding:0.5rem 0; border-bottom:1px solid var(--border-subtle);">
+              <div style="display:flex; gap:0.5rem; align-items:center;">
+                <span style="font-size:0.82rem; color:var(--text-muted);">Filter Severity:</span>
+                <select id="auditSeverityFilter" class="admin-input" style="padding:0.3rem 0.6rem; font-size:0.8rem; width:auto;" onchange="filterAuditLogs()">
+                  <option value="ALL">All Severities</option>
+                  <option value="SUCCESS">🟢 SUCCESS</option>
+                  <option value="ERROR">🔴 ERROR</option>
+                  <option value="WARN">🟡 WARN</option>
+                  <option value="INFO">🔵 INFO</option>
+                </select>
+              </div>
+              <div style="display:flex; gap:0.5rem; align-items:center;">
+                <span style="font-size:0.82rem; color:var(--text-muted);">Per Page:</span>
+                <select id="auditPerPage" class="admin-input" style="padding:0.3rem 0.6rem; font-size:0.8rem; width:auto;" onchange="changeAuditPerPage(this.value)">
+                  <option value="10" selected>10</option>
+                  <option value="25">25</option>
+                  <option value="50">50</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="admin-table-container">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th style="width:36px;"><input type="checkbox" id="selectAllAudit" onchange="toggleSelectAllAudit(this.checked)" /></th>
+                    <th>Time (UTC)</th>
+                    <th>Severity</th>
+                    <th>Category</th>
+                    <th>Action</th>
+                    <th>Event Details</th>
+                    <th>User / IP</th>
+                    <th style="text-align:right;">Payload</th>
+                  </tr>
+                </thead>
+                <tbody id="liveAuditTable"></tbody>
+              </table>
+            </div>
+
+            <!-- Neon Pagination Bar -->
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:1rem; margin-top:1.25rem; padding-top:0.75rem; border-top:1px solid var(--border-subtle);">
+              <span id="auditPaginationInfo" style="font-size:0.85rem; color:var(--text-muted);">Showing 0 of 0 events</span>
+              <div id="auditPaginationControls" style="display:flex; gap:0.4rem; align-items:center;"></div>
+            </div>
+
+          </div>
+        </section>
+
+      </main>
+    </div>
+
+  </div>
+
+  <!-- ─── Audit Payload Inspector Modal ──────────────────────────────── -->
+  <div id="auditDetailModal" class="video-modal-backdrop" style="display:none;" onclick="closeAuditModal(event)">
+    <div class="video-modal-content" style="max-width:680px; width:95%; max-height:85vh; display:flex; flex-direction:column;" onclick="event.stopPropagation()">
+      <div class="video-modal-header">
+        <h3 id="auditModalTitle" class="modal-title">📝 Event Payload & Diagnostics</h3>
+        <button class="modal-close-btn" onclick="closeAuditModal()">✕</button>
+      </div>
+      <div style="padding:1.5rem; flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:1rem;">
+        <div>
+          <label class="auth-label">Event Action & Category</label>
+          <div id="auditModalHeader" style="font-size:0.95rem; font-weight:700; color:#fff;"></div>
+        </div>
+        <div>
+          <label class="auth-label">Request Payload / Parameters</label>
+          <pre id="auditModalReq" style="white-space:pre-wrap; background:#07090f; padding:0.9rem; border-radius:8px; font-family:monospace; font-size:0.82rem; color:#93c5fd; border:1px solid var(--border-subtle); max-height:160px; overflow:auto;">—</pre>
+        </div>
+        <div>
+          <label class="auth-label">Response Data / Error Details</label>
+          <pre id="auditModalResp" style="white-space:pre-wrap; background:#07090f; padding:0.9rem; border-radius:8px; font-family:monospace; font-size:0.82rem; color:#34d399; border:1px solid var(--border-subtle); max-height:220px; overflow:auto;">—</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Edit Prompt Template Modal ──────────────────────────────── -->
+  <div id="editPromptModal" class="video-modal-backdrop" style="display:none;" onclick="closeEditPromptModal(event)">
+    <div class="video-modal-content" style="max-width:760px; width:95%; max-height:85vh; display:flex; flex-direction:column;" onclick="event.stopPropagation()">
+      <div class="video-modal-header">
+        <h3 id="editPromptModalTitle" class="modal-title">✏️ Edit AI Prompt Template</h3>
+        <button class="modal-close-btn" onclick="closeEditPromptModal()">✕</button>
+      </div>
+      <div style="padding:1.5rem; flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:1.15rem;">
+        <input type="hidden" id="editPromptId" />
+        <div>
+          <label class="auth-label">Pipeline Name</label>
+          <input id="editPromptName" class="admin-input" />
+        </div>
+        <div>
+          <label class="auth-label">System Prompt (AI Instructions & Formatting Rules)</label>
+          <textarea id="editPromptSystem" class="admin-input" rows="9" style="font-family:monospace; font-size:0.85rem; line-height:1.55;"></textarea>
+        </div>
+        <div>
+          <label class="auth-label">User Template (Placeholders e.g. {{transcript}} or {{topic}})</label>
+          <textarea id="editPromptUser" class="admin-input" rows="3" style="font-family:monospace; font-size:0.85rem;"></textarea>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:1.25rem; align-items:flex-start;">
+          <div>
+            <label class="auth-label">Sampling Temperature (0.0 – 1.0)</label>
+            <input id="editPromptTemp" type="number" step="0.05" min="0" max="1" class="admin-input" placeholder="0.1" />
+          </div>
+          <div>
+            <label class="auth-label">Pipeline Production Status</label>
+            <select id="editPromptActive" class="admin-input">
+              <option value="true">● Active (Production)</option>
+              <option value="false">○ Inactive</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="video-modal-footer" style="justify-content:flex-end;">
+        <button class="btn-primary btn-sm" onclick="submitEditPrompt()" style="min-width:200px;">💾 Save Prompt Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Set Custom User Quota Modal ─────────────────────────────────── -->
+  <div id="userQuotaModal" class="video-modal-backdrop" style="display:none;" onclick="closeUserQuotaModal(event)">
+    <div class="video-modal-content" style="max-width:440px; padding:1.75rem;" onclick="event.stopPropagation()">
+      <div class="video-modal-header">
+        <h3 class="modal-title">Set Monthly Video Quota</h3>
+        <button class="modal-close-btn" onclick="closeUserQuotaModal()">✕</button>
+      </div>
+      <div style="margin-top:1rem; display:flex; flex-direction:column; gap:1.25rem;">
+        <p style="font-size:0.85rem; color:var(--text-muted); line-height:1.5;">Adjust the monthly video generation limit for <strong id="quotaModalUsername" style="color:#fff;">user</strong>:</p>
+        <div>
+          <label class="auth-label">Monthly Shorts Allowance</label>
+          <input id="customQuotaInput" type="number" min="1" max="1000" class="admin-input" placeholder="e.g. 25" />
+        </div>
+        <div style="display:flex; justify-content:flex-end;">
+          <button class="btn-primary btn-sm" onclick="submitCustomQuota()" style="width:100%;">🎯 Save Limit</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Toast Notifications Container ──────────────────────────────── -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="auth.js"></script>
+  <script src="admin.js"></script>
+  <script>
+    function toggleAdminSidebar(open) {
+      const sidebar = document.getElementById('adminSidebar');
+      const backdrop = document.getElementById('sidebarBackdrop');
+      if (open) {
+        sidebar?.classList.add('open');
+        backdrop?.classList.add('active');
+      } else {
+        sidebar?.classList.remove('open');
+        backdrop?.classList.remove('active');
+      }
+    }
+  </script>
+</body>
+</html>
