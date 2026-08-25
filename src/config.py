@@ -52,6 +52,8 @@ try:
         DATABASE_URL: str = Field(default="sqlite:///./data/users.db", description="Database URL")
         STORAGE_PATH: str = Field(default="./storage", description="Storage path")
         ASSEMBLYAI_API_KEY: str = Field(default="", description="AssemblyAI key")
+        GROQ_API_KEY: str = Field(default="", description="Groq key")
+        TRANSCRIPTION_PROVIDER: str = Field(default="assemblyai", description="Transcription provider")
         GOOGLE_API_KEY: str = Field(default="", description="Google key")
         VIDEOSAILOR_API_KEY: str = Field(default="", description="VideoSailor key")
 
@@ -66,9 +68,15 @@ try:
             """Raise clear errors if critical keys missing — call at startup."""
             missing = []
             # These are critical for pipeline; warn but don't crash in dev
-            for key in ["ASSEMBLYAI_API_KEY", "VIDEOSAILOR_API_KEY"]:
+            for key in ["VIDEOSAILOR_API_KEY"]:
                 if not getattr(self, key):
                     missing.append(key)
+            # Transcription: need either AssemblyAI or Groq key
+            tp = getattr(self, "TRANSCRIPTION_PROVIDER", "assemblyai")
+            if tp == "groq" and not getattr(self, "GROQ_API_KEY", ""):
+                missing.append("GROQ_API_KEY (transcription_provider=groq)")
+            elif tp != "groq" and not getattr(self, "ASSEMBLYAI_API_KEY", ""):
+                missing.append("ASSEMBLYAI_API_KEY")
             if missing and os.environ.get("ENV", "development") == "production":
                 raise ValueError(f"Missing required config keys: {', '.join(missing)} — set in .env or env vars")
             return missing
@@ -99,10 +107,13 @@ except ImportError:
 #    Get your API key at: https://videosailor.com/
 VIDEOSAILOR_API_KEY = os.environ.get("VIDEOSAILOR_API_KEY", "").strip()
 
-# 2. Transcription Provider & Key (AssemblyAI Cloud API)
+# 2. Transcription Provider & Keys (AssemblyAI or Groq Whisper)
+#    Options: "assemblyai" | "groq" (FREE — whisper-large-v3-turbo)
 #    Get AssemblyAI key at: https://www.assemblyai.com/dashboard/
-TRANSCRIPTION_PROVIDER = "assemblyai"
+#    Get Groq key at: https://console.groq.com/keys
+TRANSCRIPTION_PROVIDER = os.environ.get("TRANSCRIPTION_PROVIDER", "assemblyai").lower().strip()
 ASSEMBLYAI_API_KEY = os.environ.get("ASSEMBLYAI_API_KEY", "").strip()
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 
 # 3. AI Semantic Ranking Provider & Keys (Cloud LLMs)
 #    Controls which AI brain scores and ranks the most viral moments (Phase 3.5).
@@ -130,7 +141,14 @@ def get_all_api_config() -> dict:
             "is_set": bool(os.environ.get("OPENAI_API_KEY", "").strip() or OPENAI_API_KEY),
         },
         "ranking_provider": os.environ.get("RANKING_PROVIDER", RANKING_PROVIDER),
-        "transcription_provider": "assemblyai",
+        "gemini_model": os.environ.get("GEMINI_MODEL", "gemini-3.6-flash"),
+        "transcription_provider": os.environ.get("TRANSCRIPTION_PROVIDER", TRANSCRIPTION_PROVIDER),
+        "groq": {
+            "is_set": bool(os.environ.get("GROQ_API_KEY", "").strip() or GROQ_API_KEY),
+        },
+        "free_tier_monthly_limit": get_setting("FREE_TIER_MONTHLY_LIMIT", "5"),
+        "max_video_duration_minutes": get_setting("MAX_VIDEO_DURATION_MINUTES", "90"),
+        "storage_path": get_setting("STORAGE_PATH", "./storage"),
     }
 
 
@@ -170,6 +188,12 @@ def save_api_config(new_config: dict) -> None:
         set_env_val("OPENAI_API_KEY", new_config["OPENAI_API_KEY"])
     if "RANKING_PROVIDER" in new_config and new_config["RANKING_PROVIDER"] is not None:
         set_env_val("RANKING_PROVIDER", new_config["RANKING_PROVIDER"])
+    if "GEMINI_MODEL" in new_config and new_config["GEMINI_MODEL"] is not None:
+        set_env_val("GEMINI_MODEL", new_config["GEMINI_MODEL"])
+    if "GROQ_API_KEY" in new_config and new_config["GROQ_API_KEY"] is not None:
+        set_env_val("GROQ_API_KEY", new_config["GROQ_API_KEY"])
+    if "TRANSCRIPTION_PROVIDER" in new_config and new_config["TRANSCRIPTION_PROVIDER"] is not None:
+        set_env_val("TRANSCRIPTION_PROVIDER", new_config["TRANSCRIPTION_PROVIDER"])
 
     # Atomic write via temp file + replace to avoid race/corruption
     try:
@@ -212,6 +236,15 @@ def _resolve_ffmpeg_bin() -> str:
         import imageio_ffmpeg as _iio_ffmpeg
         exe = _iio_ffmpeg.get_ffmpeg_exe()
         if exe:
+            # imageio-ffmpeg names binary differently — create ffmpeg.exe copy for yt-dlp/PATH
+            import pathlib as _pathlib
+            _exe_path = _pathlib.Path(exe)
+            _link = _exe_path.parent / "ffmpeg.exe"
+            if not _link.exists():
+                try:
+                    _shutil.copy2(exe, _link)
+                except Exception:
+                    pass
             return exe
     except Exception:
         pass
@@ -372,4 +405,229 @@ AUTO_PITCH_SHIFT_ENABLED = True
 AUTO_PITCH_SEMITONES = 0.5
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# DYNAMIC SETTINGS ENGINE — DB-backed with in-memory TTL cache
+# ══════════════════════════════════════════════════════════════════════════════
+import time as _time
+import json as _json
+import threading as _threading
+
+_settings_cache: dict[str, tuple[str, float]] = {}
+_settings_cache_lock = _threading.Lock()
+_CACHE_TTL_SECONDS = 5.0
+
+
+def get_setting(key: str, default=None):
+    """Read a setting from the DB `settings` table with a 5-second in-memory cache.
+
+    Fallback chain: cache → DB → os.environ → hardcoded default.
+    Thread-safe. Returns `default` if the DB is not reachable.
+    """
+    now = _time.monotonic()
+
+    with _settings_cache_lock:
+        if key in _settings_cache:
+            val, ts = _settings_cache[key]
+            if now - ts < _CACHE_TTL_SECONDS:
+                return val
+
+    try:
+        from src.models import SessionLocal, Setting
+        db = SessionLocal()
+        try:
+            row = db.query(Setting).filter(Setting.key == key).first()
+            if row and row.value is not None:
+                val = row.value
+                with _settings_cache_lock:
+                    _settings_cache[key] = (val, now)
+                return val
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+    env_val = os.environ.get(key)
+    if env_val is not None:
+        with _settings_cache_lock:
+            _settings_cache[key] = (env_val, now)
+        return env_val
+
+    return default
+
+
+def get_setting_int(key: str, default: int = 0) -> int:
+    """Convenience: read an integer setting."""
+    val = get_setting(key, default)
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def get_setting_float(key: str, default: float = 0.0) -> float:
+    """Convenience: read a float setting."""
+    val = get_setting(key, default)
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def get_setting_bool(key: str, default: bool = False) -> bool:
+    """Convenience: read a boolean setting."""
+    val = get_setting(key, default)
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.lower() in ("1", "true", "yes", "on")
+    return bool(val)
+
+
+def get_setting_tuple(key: str, default: tuple = ()) -> tuple:
+    """Convenience: read an RGB tuple setting stored as '255,230,0' or JSON."""
+    val = get_setting(key, None)
+    if val is None:
+        return default
+    try:
+        parsed = _json.loads(val)
+        if isinstance(parsed, list):
+            return tuple(parsed)
+    except Exception:
+        pass
+    try:
+        parts = [int(x.strip()) for x in str(val).split(",")]
+        return tuple(parts)
+    except Exception:
+        return default
+
+
+def set_setting(key: str, value, admin_id: int = None) -> None:
+    """Write a setting to DB and invalidate cache."""
+    with _settings_cache_lock:
+        _settings_cache.pop(key, None)
+
+    try:
+        from src.models import SessionLocal, Setting
+        db = SessionLocal()
+        try:
+            row = db.query(Setting).filter(Setting.key == key).first()
+            str_value = str(value) if not isinstance(value, str) else value
+            if row:
+                row.value = str_value
+                row.updated_by = admin_id
+            else:
+                row = Setting(key=key, value=str_value, is_secret=False, updated_by=admin_id)
+                db.add(row)
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+
+def set_setting_bulk(settings_dict: dict, admin_id: int = None) -> None:
+    """Write multiple settings at once and invalidate all caches."""
+    for key, value in settings_dict.items():
+        set_setting(key, value, admin_id=admin_id)
+
+
+def invalidate_settings_cache() -> None:
+    """Clear the entire in-memory settings cache."""
+    with _settings_cache_lock:
+        _settings_cache.clear()
+
+
+# ── Convenience loaders for each settings group ─────────────────────────────
+
+def get_video_spec_config() -> dict:
+    """Return current video output specification (dynamic)."""
+    return {
+        "target_width": get_setting_int("target_width", TARGET_WIDTH),
+        "target_height": get_setting_int("target_height", TARGET_HEIGHT),
+        "target_fps": get_setting_int("target_fps", TARGET_FPS),
+        "max_short_duration": get_setting_int("max_short_duration", MAX_SHORT_DURATION),
+        "min_short_duration": get_setting_int("min_short_duration", MIN_SHORT_DURATION),
+    }
+
+
+def get_clip_selection_config() -> dict:
+    """Return current clip selection parameters (dynamic)."""
+    return {
+        "clip_min_duration": get_setting_float("clip_min_duration", CLIP_MIN_DURATION),
+        "clip_max_duration": get_setting_float("clip_max_duration", CLIP_MAX_DURATION),
+        "clip_top_n": get_setting_int("clip_top_n", CLIP_TOP_N),
+        "clip_min_score": get_setting_float("clip_min_score", CLIP_MIN_SCORE),
+        "clip_min_separation": get_setting_float("clip_min_separation", CLIP_MIN_SEPARATION),
+        "clip_distribution_strategy": get_setting("clip_distribution_strategy", CLIP_DISTRIBUTION_STRATEGY),
+        "clip_step_size": get_setting_float("clip_step_size", CLIP_STEP_SIZE),
+        "clip_overlap_threshold": get_setting_float("clip_overlap_threshold", CLIP_OVERLAP_THRESHOLD),
+    }
+
+
+def get_scoring_weights() -> dict:
+    """Return current scoring weights from DB or hardcoded defaults."""
+    raw = get_setting("scoring_weights", None)
+    if raw:
+        try:
+            parsed = _json.loads(raw)
+            if isinstance(parsed, dict) and len(parsed) > 5:
+                return {k: float(v) for k, v in parsed.items()}
+        except Exception:
+            pass
+    return dict(SCORING_WEIGHTS)
+
+
+def get_caption_config() -> dict:
+    """Return current caption rendering settings (dynamic)."""
+    return {
+        "caption_font_size": get_setting_int("caption_font_size", CAPTION_FONT_SIZE),
+        "caption_max_words": get_setting_int("caption_max_words", CAPTION_MAX_WORDS),
+        "caption_min_words": get_setting_int("caption_min_words", CAPTION_MIN_WORDS),
+        "caption_max_lines": get_setting_int("caption_max_lines", CAPTION_MAX_LINES),
+        "caption_max_width": get_setting_int("caption_max_width", CAPTION_MAX_WIDTH),
+        "caption_y": get_setting_int("caption_y", CAPTION_Y),
+        "caption_text_color": get_setting_tuple("caption_text_color", CAPTION_TEXT_COLOR),
+        "caption_highlight_color": get_setting_tuple("caption_highlight_color", CAPTION_HIGHLIGHT_COLOR),
+        "caption_outline_color": get_setting_tuple("caption_outline_color", CAPTION_OUTLINE_COLOR),
+        "caption_outline_width": get_setting_int("caption_outline_width", CAPTION_OUTLINE_WIDTH),
+        "caption_start_padding": get_setting_float("caption_start_padding", CAPTION_START_PADDING),
+        "caption_end_padding": get_setting_float("caption_end_padding", CAPTION_END_PADDING),
+        "caption_max_duration": get_setting_float("caption_max_duration", CAPTION_MAX_DURATION),
+        "caption_min_duration": get_setting_float("caption_min_duration", CAPTION_MIN_DURATION),
+    }
+
+
+def get_enhancement_config() -> dict:
+    """Return current audio/video enhancement settings (dynamic)."""
+    return {
+        "auto_color_filter_enabled": get_setting_bool("auto_color_filter_enabled", AUTO_COLOR_FILTER_ENABLED),
+        "auto_video_filter": get_setting("auto_video_filter", AUTO_VIDEO_FILTER),
+        "auto_pitch_shift_enabled": get_setting_bool("auto_pitch_shift_enabled", AUTO_PITCH_SHIFT_ENABLED),
+        "auto_pitch_semitones": get_setting_float("auto_pitch_semitones", AUTO_PITCH_SEMITONES),
+    }
+
+
+def get_semantic_ranking_config() -> dict:
+    """Return current semantic ranking defaults (dynamic)."""
+    return {
+        "semantic_default_pool_size": get_setting_int("semantic_default_pool_size", SEMANTIC_DEFAULT_POOL_SIZE),
+        "semantic_min_score": get_setting_float("semantic_min_score", SEMANTIC_MIN_SCORE),
+        "semantic_default_top_n": get_setting_int("semantic_default_top_n", SEMANTIC_DEFAULT_TOP_N),
+        "semantic_default_separation": get_setting_float("semantic_default_separation", SEMANTIC_DEFAULT_SEPARATION),
+    }
+
+
+def get_all_pipeline_config() -> dict:
+    """Return every pipeline setting group — used by admin API."""
+    from src.config import get_setting
+    return {
+        "transcription_provider": get_setting("transcription_provider", "assemblyai"),
+        "groq_whisper_model": get_setting("groq_whisper_model", "whisper-large-v3-turbo"),
+        "video_specs": get_video_spec_config(),
+        "clip_selection": get_clip_selection_config(),
+        "scoring_weights": get_scoring_weights(),
+        "captions": get_caption_config(),
+        "enhancement": get_enhancement_config(),
+        "semantic_ranking": get_semantic_ranking_config(),
+    }
 

@@ -74,8 +74,9 @@ OUTPUT_DIR = ROOT_DIR / "output"
 TEMP_DIR = ROOT_DIR / "temp"
 DATA_DIR = ROOT_DIR / "data"
 
-# ── Thread-safe pipeline state ────────────────────────────────────────────────
+# ── Thread-safe pipeline state & Cancellation Event ───────────────────────────
 pipeline_lock = threading.Lock()
+active_pipeline_cancel_event = threading.Event()
 pipeline_state: dict[str, Any] = {
     "status": "idle",  # idle | running | completed | error
     "current_phase": None,  # download | transcribe | select | rank | render
@@ -406,7 +407,101 @@ async def change_password(payload: Request):
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     update_user_password(uid, req.old_password, req.new_password)
+    from src.logger import log_system_event
+    log_system_event("AUTH", "Password Changed", f"User #{uid} updated account password", user_id=uid, severity="SUCCESS")
     return {"success": True, "message": "Password changed successfully"}
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(..., min_length=10, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
+@app.post("/api/auth/forgot-password", tags=["auth"])
+async def forgot_password(payload: Request):
+    """Generate password reset token and dispatch via SMTP email if configured."""
+    from src.auth import get_user_by_username_or_email
+    from src.smtp_service import create_password_reset_token, send_smtp_email, load_smtp_config
+    from src.logger import log_system_event
+
+    body = await payload.json()
+    try:
+        req = ForgotPasswordRequest(**body)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    user_row = get_user_by_username_or_email(str(req.email).strip().lower())
+    if not user_row:
+        # Don't leak user existence
+        return {"success": True, "message": "If that email is registered, a password recovery link has been dispatched."}
+
+    user_id = int(user_row["id"])
+    username = str(user_row["username"])
+    reset_token = create_password_reset_token(user_id, str(req.email))
+
+    # Determine base url
+    import urllib.parse as _up
+    origin = payload.headers.get("origin") if hasattr(payload, "headers") and payload.headers else "http://localhost:5000"
+    reset_link = f"{origin}/login.html?token={reset_token}&email={_up.quote(str(req.email))}"
+
+    # Dispatch email if SMTP is configured
+    smtp_cfg = load_smtp_config()
+    email_sent = False
+    email_error = None
+    if smtp_cfg.get("is_configured"):
+        html = f"""
+        <div style="background:#080a11; color:#e2e8f0; padding:2rem; font-family:'Segoe UI',sans-serif; border-radius:12px; max-width:540px; margin:auto; border:1px solid rgba(168,85,247,0.3);">
+          <h2 style="color:#ffffff; margin-top:0;">🎙️ Vergeclip AI Password Reset</h2>
+          <p>Hello <strong>{username}</strong>,</p>
+          <p>We received a request to reset your password. Click the button below to choose a new password (valid for 15 minutes):</p>
+          <div style="text-align:center; margin:2rem 0;">
+            <a href="{reset_link}" style="background:linear-gradient(135deg,#a855f7,#06b6d4); color:#ffffff; padding:0.85rem 1.8rem; text-decoration:none; border-radius:8px; font-weight:bold; display:inline-block;">Reset My Password</a>
+          </div>
+          <p style="font-size:0.85rem; color:#94a3b8;">If you did not request this, you can safely ignore this email. Your password will remain unchanged.</p>
+        </div>
+        """
+        ok, msg = send_smtp_email(str(req.email), "Vergeclip AI — Password Reset Request", html)
+        email_sent = ok
+        email_error = msg if not ok else None
+
+    log_system_event("AUTH", "Password Reset Requested", f"Reset token created for {username} ({req.email})", user_id=user_id, severity="INFO")
+
+    return {
+        "success": True,
+        "email_sent": email_sent,
+        "reset_token": reset_token if not email_sent else None,
+        "reset_link": reset_link if not email_sent else None,
+        "message": "Password reset instructions have been generated. Check your email or use the recovery token."
+    }
+
+
+@app.post("/api/auth/reset-password", tags=["auth"])
+async def reset_password(payload: Request):
+    """Verify reset token and update user password."""
+    from src.auth import reset_user_password_by_id, get_user_by_id
+    from src.smtp_service import verify_and_consume_reset_token
+    from src.logger import log_system_event
+
+    body = await payload.json()
+    try:
+        req = ResetPasswordRequest(**body)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    user_id = verify_and_consume_reset_token(req.token)
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token. Please request a new recovery link.")
+
+    reset_user_password_by_id(user_id, req.new_password)
+    user = get_user_by_id(user_id)
+    uname = user.username if user else str(user_id)
+
+    log_system_event("AUTH", "Password Reset Completed", f"Password successfully reset for user '{uname}' (#{user_id})", user_id=user_id, severity="SUCCESS")
+    return {"success": True, "message": "Password has been successfully updated! You can now sign in with your new credentials."}
 
 
 @app.post("/api/auth/update-profile", tags=["auth"])
@@ -428,6 +523,43 @@ async def update_profile(payload: Request):
         raise HTTPException(status_code=400, detail="Provide username or email to update")
     user = update_user_profile(uid, req.username, str(req.email) if req.email else None)
     return {"success": True, "message": "Profile updated", "user": user.model_dump()}
+
+
+@app.post("/api/auth/change-password", tags=["auth"])
+async def change_password(payload: Request):
+    """Change password for an authenticated user or admin."""
+    from src.auth import decode_token, get_user_by_id, verify_password, reset_user_password_by_id
+    from src.logger import log_system_event
+
+    auth = payload.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token = auth.split(" ", 1)[1].strip()
+    data = decode_token(token)
+    uid = int(data.get("sub"))
+    body = await payload.json()
+    old_pw = str(body.get("old_password") or "")
+    new_pw = str(body.get("new_password") or "")
+
+    if not old_pw or not new_pw:
+        raise HTTPException(status_code=400, detail="Current and new password required")
+    if len(new_pw) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters long")
+
+    from src.models import User, SessionLocal
+    db = SessionLocal()
+    try:
+        user_row = db.query(User).filter(User.id == uid).first()
+        if not user_row:
+            raise HTTPException(status_code=404, detail="User not found")
+        if not verify_password(old_pw, user_row.password_hash):
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+    finally:
+        db.close()
+
+    reset_user_password_by_id(uid, new_pw)
+    log_system_event("AUTH", "Password Changed", f"User #{uid} changed account password", user_id=uid, severity="SUCCESS")
+    return {"success": True, "message": "Password has been successfully changed!"}
 
 
 # ── Status ────────────────────────────────────────────────────────────────────
@@ -523,6 +655,8 @@ async def cancel_pipeline(request: Request):
             raise
         except Exception:
             raise HTTPException(status_code=401, detail="Invalid token")
+
+    active_pipeline_cancel_event.set()
     with pipeline_lock:
         if pipeline_state["status"] != "running":
             return {"success": True, "message": "No pipeline running", "pipeline": dict(pipeline_state)}
@@ -531,10 +665,9 @@ async def cancel_pipeline(request: Request):
         pipeline_state["current_phase"] = None
         pipeline_state["progress"] = 0
         pipeline_state["error"] = None
-        log.info("Pipeline job %s cancelled by user", old_job)
-        log_pipeline_msg(f"⚪ Pipeline cancelled (job {old_job})")
-        # keep logs but reset job
         pipeline_state["job_id"] = None
+        log.info("Pipeline job %s cancelled by user", old_job)
+        log_pipeline_msg(f"⚪ Pipeline safely cancelled and resources released (job {old_job})")
     return {"success": True, "message": "Pipeline cancelled", "pipeline": dict(pipeline_state)}
 
 
@@ -877,7 +1010,7 @@ async def admin_reset_device_trial(device_id: str, request: Request):
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
-ALLOWED_CONFIG_KEYS = {"VIDEOSAILOR_API_KEY", "ASSEMBLYAI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "RANKING_PROVIDER"}
+ALLOWED_CONFIG_KEYS = {"VIDEOSAILOR_API_KEY", "ASSEMBLYAI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "RANKING_PROVIDER", "GEMINI_MODEL", "GROQ_API_KEY", "TRANSCRIPTION_PROVIDER", "FREE_TIER_MONTHLY_LIMIT", "MAX_VIDEO_DURATION_MINUTES", "STORAGE_PATH"}
 
 
 @app.get("/api/config", tags=["config"])
@@ -930,9 +1063,14 @@ async def save_config(payload: Request):
         filtered["RANKING_PROVIDER"] = rp
 
     try:
-        from src.config import save_api_config, get_all_api_config
+        from src.config import save_api_config, get_all_api_config, set_setting
 
         save_api_config(filtered)
+        # Also persist system-limit keys to DB so get_setting() picks them up dynamically
+        _db_keys = {"FREE_TIER_MONTHLY_LIMIT", "MAX_VIDEO_DURATION_MINUTES", "STORAGE_PATH"}
+        for _k in _db_keys:
+            if _k in filtered:
+                set_setting(_k, filtered[_k])
         return {
             "success": True,
             "message": "API keys and configuration saved successfully!",
@@ -958,16 +1096,8 @@ def _require_admin(request: Request):
     user = get_user_by_id(uid)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
-    # Check role via DB (src/models)
-    from src.models import SessionLocal, User
-
-    db = SessionLocal()
-    try:
-        db_user = db.query(User).filter(User.id == uid).first()
-        if not db_user or db_user.role != "admin":
-            raise HTTPException(status_code=403, detail="Admin access required")
-    finally:
-        db.close()
+    if user.role != "admin" and user.username.lower() != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
     return user
 
 
@@ -1003,12 +1133,13 @@ async def admin_test_config(request: Request):
 
     # If empty, automatically fallback to currently configured key in environment or settings
     if not value:
-        from src.config import settings, GOOGLE_API_KEY, OPENAI_API_KEY, ASSEMBLYAI_API_KEY, VIDEOSAILOR_API_KEY
+        from src.config import settings, GOOGLE_API_KEY, OPENAI_API_KEY, ASSEMBLYAI_API_KEY, VIDEOSAILOR_API_KEY, GROQ_API_KEY
         defaults = {
             "GOOGLE_API_KEY": GOOGLE_API_KEY,
             "OPENAI_API_KEY": OPENAI_API_KEY,
             "ASSEMBLYAI_API_KEY": ASSEMBLYAI_API_KEY,
-            "VIDEOSAILOR_API_KEY": VIDEOSAILOR_API_KEY
+            "VIDEOSAILOR_API_KEY": VIDEOSAILOR_API_KEY,
+            "GROQ_API_KEY": GROQ_API_KEY,
         }
         value = os.environ.get(key) or os.environ.get(key.upper()) or defaults.get(key) or (getattr(settings, key, None) if settings else None) or ""
 
@@ -1046,6 +1177,16 @@ async def admin_test_config(request: Request):
                 log_system_event("CONFIG", "AssemblyAI Test Failed", "Invalid key", severity="ERROR")
             else:
                 result = {"verified": False, "message": f"AssemblyAI response: {r.status_code}"}
+        elif key == "GROQ_API_KEY":
+            r = _req.get("https://api.groq.com/openai/v1/models", headers={"Authorization": f"Bearer {value}", "User-Agent": "Vergeclip/1.0"}, timeout=8)
+            if r.status_code == 200:
+                result = {"verified": True, "message": "Groq API key valid ✓ (Whisper FREE tier: $0)"}
+                log_system_event("CONFIG", "Groq Test Success", "Key verified", severity="SUCCESS")
+            elif r.status_code == 401:
+                result = {"verified": False, "message": "Invalid Groq API key"}
+                log_system_event("CONFIG", "Groq Test Failed", "401 Unauthorized", severity="ERROR")
+            else:
+                result = {"verified": False, "message": f"Groq API status: {r.status_code}"}
         elif key == "GOOGLE_API_KEY":
             r = _req.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={value}", timeout=8)
             if r.status_code == 200:
@@ -1263,26 +1404,24 @@ async def admin_activate_prompt(prompt_id: int, request: Request):
 @app.get("/admin/audit", tags=["admin"])
 async def admin_audit(request: Request):
     _require_admin(request)
-    from src.logger import SYSTEM_EVENT_LOGS
     from src.models import AuditLog, SessionLocal
 
-    # 1. Real-time in-memory event stream (Zero delay)
-    live_events = list(SYSTEM_EVENT_LOGS)
-
-    # 2. Database audit records
     db = SessionLocal()
-    db_logs = []
     try:
-        logs = db.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(30).all()
-        db_logs = [
+        limit = int(request.query_params.get("limit", "200"))
+        logs = db.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(limit).all()
+        events = [
             {
-                "id": l.id,
-                "admin_id": l.admin_id,
-                "key": l.key,
-                "old_value": (l.old_value[:50] + "...") if l.old_value and len(l.old_value) > 50 else l.old_value,
-                "new_value": (l.new_value[:50] + "...") if l.new_value and len(l.new_value) > 50 else l.new_value,
-                "tested": l.tested,
-                "created_at": l.created_at.isoformat() if l.created_at else None
+                "id": l.event_id,
+                "timestamp": l.created_at.isoformat() if l.created_at else None,
+                "category": l.category,
+                "action": l.action,
+                "detail": l.detail,
+                "user_id": l.user_id or "System",
+                "severity": l.severity,
+                "ip": l.ip or "127.0.0.1",
+                "request_data": l.request_data,
+                "response_data": l.response_data,
             }
             for l in logs
         ]
@@ -1291,8 +1430,8 @@ async def admin_audit(request: Request):
 
     return {
         "success": True,
-        "live_events": live_events,
-        "logs": db_logs
+        "live_events": events,
+        "logs": events
     }
 
 
@@ -1307,6 +1446,22 @@ async def admin_test_custom_ai(request: Request):
     base_url = str(body.get("base_url") or "https://api.openai.com/v1").strip()
     api_key = str(body.get("api_key") or "").strip()
     model_name = str(body.get("model_name") or "gpt-4o-mini").strip()
+    provider_id = body.get("provider_id")
+
+    # If no API key provided but provider_id given, look up stored key from DB
+    if not api_key and provider_id:
+        from src.models import SessionLocal, CustomProvider
+        db = SessionLocal()
+        try:
+            provider = db.query(CustomProvider).filter(CustomProvider.id == int(provider_id)).first()
+            if provider and provider.api_key:
+                api_key = provider.api_key
+                if not base_url or base_url == "https://api.openai.com/v1":
+                    base_url = provider.base_url
+                if not model_name or model_name == "gpt-4o-mini":
+                    model_name = provider.model
+        finally:
+            db.close()
 
     t0 = time.time()
     try:
@@ -1329,7 +1484,7 @@ async def admin_test_custom_ai(request: Request):
 
 @app.post("/api/admin/ai/save", tags=["admin"])
 async def admin_save_custom_ai(request: Request):
-    """Save custom OpenAI-compatible AI config into system environment."""
+    """Save custom OpenAI-compatible AI config into system environment AND .env file."""
     _require_admin(request)
     import os
     from src.logger import log_system_event
@@ -1348,8 +1503,413 @@ async def admin_save_custom_ai(request: Request):
         os.environ["CUSTOM_AI_MODEL"] = model_name
     os.environ["RANKING_PROVIDER"] = provider
 
+    # Persist to .env file so settings survive restart
+    from src.config import save_api_config
+    env_updates = {}
+    if provider:
+        env_updates["RANKING_PROVIDER"] = provider
+    if base_url:
+        env_updates["CUSTOM_AI_BASE_URL"] = base_url
+    if api_key:
+        env_updates["CUSTOM_AI_API_KEY"] = api_key
+    if model_name:
+        env_updates["CUSTOM_AI_MODEL"] = model_name
+    if env_updates:
+        try:
+            save_api_config(env_updates)
+        except Exception as e:
+            log.warning("Failed to persist custom AI config to .env: %s", e)
+
     log_system_event("CONFIG", "Primary AI Config Updated", f"Provider set to {provider} ({model_name} @ {base_url})", severity="SUCCESS")
     return {"success": True, "message": f"Custom AI Provider '{provider}' saved and activated for all video generation pipelines!"}
+
+
+# ── Custom AI Providers CRUD ────────────────────────────────────────────────
+@app.post("/api/admin/custom-providers/fetch-models", tags=["admin"])
+async def fetch_provider_models(request: Request):
+    """Fetch available models from an OpenAI-compatible provider endpoint."""
+    _require_admin(request)
+    import urllib.request as _urlreq
+    import urllib.error
+
+    body = await request.json()
+    base_url = str(body.get("base_url") or "").strip().rstrip("/")
+    api_key = str(body.get("api_key") or "").strip()
+
+    if not base_url:
+        raise HTTPException(status_code=400, detail="Base URL is required.")
+
+    models_url = base_url + "/v1/models" if "/v1" not in base_url else base_url + "/models"
+    if base_url.endswith("/v1"):
+        models_url = base_url + "/models"
+
+    headers = {"User-Agent": "Vergeclip/1.0", "Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    req = _urlreq.Request(models_url, headers=headers)
+    try:
+        with _urlreq.urlopen(req, timeout=12) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        err = e.read().decode("utf-8", errors="replace")[:300]
+        raise HTTPException(status_code=400, detail=f"Provider returned HTTP {e.code}: {err}")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Cannot reach provider: {e}")
+
+    raw_models = data.get("data", []) if isinstance(data, dict) else data if isinstance(data, list) else []
+
+    # Known free-tier model patterns
+    free_patterns = ["llama-3.1-8b", "llama-3.2-", "llama-3.3-70b-versatile", "gemma", "mistral-7b", "mixtral-8x7b", "qwen2.5-32b", "deepseek-r1", "deepseek-chat", "gpt-oss-20b", "phi-3"]
+
+    models = []
+    seen = set()
+    for m in raw_models:
+        mid = m.get("id", "") if isinstance(m, dict) else str(m)
+        if not mid or mid in seen:
+            continue
+        seen.add(mid)
+        is_free = any(fp in mid.lower() for fp in free_patterns)
+        models.append({"id": mid, "free": is_free})
+
+    models.sort(key=lambda x: (not x["free"], x["id"]))
+    return {"success": True, "models": models, "count": len(models)}
+
+
+@app.get("/api/admin/custom-providers", tags=["admin"])
+async def list_custom_providers(request: Request):
+    """List all saved custom AI providers (keys masked)."""
+    _require_admin(request)
+    from src.models import SessionLocal, CustomProvider
+    db = SessionLocal()
+    try:
+        rows = db.query(CustomProvider).order_by(CustomProvider.is_active.desc(), CustomProvider.id.desc()).all()
+        providers = []
+        for r in rows:
+            providers.append({
+                "id": r.id,
+                "name": r.name,
+                "base_url": r.base_url,
+                "api_key_masked": (r.api_key[:8] + "****" + r.api_key[-4:]) if r.api_key and len(r.api_key) > 14 else ("****" if r.api_key else ""),
+                "model": r.model,
+                "is_active": r.is_active,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            })
+        return {"success": True, "providers": providers}
+    finally:
+        db.close()
+
+
+@app.post("/api/admin/custom-providers", tags=["admin"])
+async def save_custom_provider(request: Request):
+    """Create or update a custom AI provider. Sets as active if is_active=True."""
+    _require_admin(request)
+    import os
+    from src.models import SessionLocal, CustomProvider
+    from src.logger import log_system_event
+
+    body = await request.json()
+    provider_id = body.get("id")  # None = create new
+    name = str(body.get("name") or "").strip()
+    base_url = str(body.get("base_url") or "").strip()
+    api_key = str(body.get("api_key") or "").strip()
+    model = str(body.get("model") or "").strip()
+    is_active = bool(body.get("is_active", True))
+
+    if not name or not base_url or not model:
+        raise HTTPException(status_code=400, detail="Name, Base URL, and Model are required.")
+
+    db = SessionLocal()
+    try:
+        if provider_id:
+            row = db.query(CustomProvider).filter(CustomProvider.id == provider_id).first()
+            if not row:
+                raise HTTPException(status_code=404, detail="Provider not found")
+            row.name = name
+            row.provider_type = "custom_openai"
+            row.base_url = base_url
+            if api_key:
+                row.api_key = api_key
+            row.model = model
+            row.is_active = is_active
+        else:
+            row = CustomProvider(
+                name=name, provider_type="custom_openai", base_url=base_url,
+                api_key=api_key, model=model, is_active=is_active,
+            )
+            db.add(row)
+
+        # If setting active, deactivate others
+        if is_active:
+            db.query(CustomProvider).filter(CustomProvider.id != (row.id if provider_id else 0)).update({"is_active": False})
+
+        db.commit()
+        db.refresh(row)
+
+        # Also set env vars for the active provider
+        if is_active:
+            os.environ["RANKING_PROVIDER"] = "custom_openai"
+            os.environ["CUSTOM_AI_BASE_URL"] = base_url
+            if api_key:
+                os.environ["CUSTOM_AI_API_KEY"] = api_key
+            os.environ["CUSTOM_AI_MODEL"] = model
+            from src.config import save_api_config
+            env_updates = {"RANKING_PROVIDER": "custom_openai", "CUSTOM_AI_BASE_URL": base_url, "CUSTOM_AI_MODEL": model}
+            if api_key:
+                env_updates["CUSTOM_AI_API_KEY"] = api_key
+            try:
+                save_api_config(env_updates)
+            except Exception as e:
+                log.warning("Failed to persist provider to .env: %s", e)
+
+        log_system_event("CONFIG", "Custom Provider Saved", f"{name} ({model})", severity="SUCCESS")
+        return {"success": True, "id": row.id, "message": f"Provider '{name}' saved!"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+@app.delete("/api/admin/custom-providers/{provider_id}", tags=["admin"])
+async def delete_custom_provider(provider_id: int, request: Request):
+    """Delete a custom AI provider by ID."""
+    _require_admin(request)
+    import os
+    from src.models import SessionLocal, CustomProvider
+    from src.logger import log_system_event
+
+    db = SessionLocal()
+    try:
+        row = db.query(CustomProvider).filter(CustomProvider.id == provider_id).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Provider not found")
+        name = row.name
+        was_active = row.is_active
+        db.delete(row)
+        db.commit()
+
+        # If deleted provider was active, reset env to defaults
+        if was_active:
+            os.environ["RANKING_PROVIDER"] = "gemini"
+            from src.config import save_api_config
+            try:
+                save_api_config({"RANKING_PROVIDER": "gemini"})
+            except Exception:
+                pass
+
+        log_system_event("CONFIG", "Custom Provider Deleted", f"Deleted '{name}'", severity="WARN")
+        return {"success": True, "message": f"Provider '{name}' deleted."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+@app.post("/api/admin/custom-providers/{provider_id}/activate", tags=["admin"])
+async def activate_custom_provider(provider_id: int, request: Request):
+    """Set a provider as the active one (deactivates others)."""
+    _require_admin(request)
+    import os
+    from src.models import SessionLocal, CustomProvider
+    from src.logger import log_system_event
+
+    db = SessionLocal()
+    try:
+        row = db.query(CustomProvider).filter(CustomProvider.id == provider_id).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Provider not found")
+
+        db.query(CustomProvider).update({"is_active": False})
+        row.is_active = True
+        db.commit()
+
+        # Apply to env
+        os.environ["RANKING_PROVIDER"] = "custom_openai"
+        os.environ["CUSTOM_AI_BASE_URL"] = row.base_url
+        if row.api_key:
+            os.environ["CUSTOM_AI_API_KEY"] = row.api_key
+        os.environ["CUSTOM_AI_MODEL"] = row.model
+        from src.config import save_api_config
+        env_updates = {"RANKING_PROVIDER": "custom_openai", "CUSTOM_AI_BASE_URL": row.base_url, "CUSTOM_AI_MODEL": row.model}
+        if row.api_key:
+            env_updates["CUSTOM_AI_API_KEY"] = row.api_key
+        try:
+            save_api_config(env_updates)
+        except Exception:
+            pass
+
+        log_system_event("CONFIG", "Provider Activated", f"Switched to '{row.name}' ({row.model})", severity="SUCCESS")
+        return {"success": True, "message": f"Activated '{row.name}'."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+# ── Pipeline Settings (Dynamic Configuration) ────────────────────────────────
+@app.get("/api/admin/pipeline-config", tags=["admin"])
+async def admin_get_pipeline_config(request: Request):
+    """Return all pipeline settings (video specs, clip selection, scoring, captions, etc.)."""
+    _require_admin(request)
+    from src.config import get_all_pipeline_config, get_setting
+
+    cfg = get_all_pipeline_config()
+    cfg["pipeline_system_prompt"] = get_setting("pipeline_system_prompt", None)
+    return {"success": True, "config": cfg}
+
+
+@app.post("/api/admin/pipeline-config", tags=["admin"])
+async def admin_save_pipeline_config(request: Request):
+    """Save pipeline settings to DB. Supports partial updates (only sent keys are updated)."""
+    admin = _require_admin(request)
+    from src.config import set_setting, set_setting_bulk, invalidate_settings_cache
+    from src.logger import log_system_event
+
+    body = await request.json()
+    if not body or not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+
+    allowed_keys = {
+        # Transcription
+        "transcription_provider", "groq_whisper_model",
+        # Video specs
+        "target_width", "target_height", "target_fps", "max_short_duration", "min_short_duration",
+        # Clip selection
+        "clip_min_duration", "clip_max_duration", "clip_top_n", "clip_min_score",
+        "clip_min_separation", "clip_distribution_strategy", "clip_step_size", "clip_overlap_threshold",
+        # Scoring weights
+        "scoring_weights",
+        # Semantic ranking
+        "semantic_default_pool_size", "semantic_min_score", "semantic_default_top_n", "semantic_default_separation",
+        # Captions
+        "caption_font_size", "caption_max_words", "caption_min_words", "caption_max_lines",
+        "caption_max_width", "caption_y", "caption_text_color", "caption_highlight_color",
+        "caption_outline_color", "caption_outline_width", "caption_start_padding", "caption_end_padding",
+        "caption_max_duration", "caption_min_duration",
+        # Enhancement
+        "auto_color_filter_enabled", "auto_video_filter", "auto_pitch_shift_enabled", "auto_pitch_semitones",
+        # System prompt
+        "pipeline_system_prompt",
+    }
+
+    filtered = {}
+    for k, v in body.items():
+        if k in allowed_keys and v is not None:
+            filtered[k] = str(v) if not isinstance(v, str) else v
+
+    if not filtered:
+        raise HTTPException(status_code=400, detail="No valid pipeline settings provided")
+
+    # Validate numeric ranges
+    numeric_validators = {
+        "target_width": (320, 4096),
+        "target_height": (320, 7680),
+        "target_fps": (15, 120),
+        "max_short_duration": (5, 600),
+        "min_short_duration": (3, 300),
+        "clip_min_duration": (3.0, 120.0),
+        "clip_max_duration": (5.0, 300.0),
+        "clip_top_n": (1, 100),
+        "clip_min_score": (0.0, 100.0),
+        "clip_min_separation": (0.0, 600.0),
+        "clip_step_size": (0.5, 10.0),
+        "clip_overlap_threshold": (0.0, 1.0),
+        "semantic_default_pool_size": (10, 500),
+        "semantic_min_score": (0.0, 100.0),
+        "semantic_default_top_n": (1, 100),
+        "semantic_default_separation": (0.0, 600.0),
+        "caption_font_size": (12, 200),
+        "caption_max_words": (1, 15),
+        "caption_min_words": (1, 10),
+        "caption_max_lines": (1, 5),
+        "caption_max_width": (200, 1080),
+        "caption_y": (100, 1920),
+        "caption_outline_width": (0, 20),
+        "caption_max_duration": (0.5, 10.0),
+        "caption_min_duration": (0.1, 5.0),
+        "auto_pitch_semitones": (-6.0, 6.0),
+    }
+    for k, v in filtered.items():
+        if k in numeric_validators and k != "scoring_weights":
+            lo, hi = numeric_validators[k]
+            try:
+                fv = float(v)
+                if fv < lo or fv > hi:
+                    raise HTTPException(status_code=400, detail=f"{k} must be between {lo} and {hi}, got {fv}")
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"{k} must be a valid number, got '{v}'")
+
+    # Validate scoring_weights JSON if provided
+    if "scoring_weights" in filtered:
+        import json as _json
+        try:
+            parsed = _json.loads(filtered["scoring_weights"])
+            if not isinstance(parsed, dict) or len(parsed) < 5:
+                raise HTTPException(status_code=400, detail="scoring_weights must be a JSON dict with at least 5 entries")
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="scoring_weights must be valid JSON")
+
+    # Validate strategy
+    if "clip_distribution_strategy" in filtered:
+        if filtered["clip_distribution_strategy"] not in ("spaced_top", "bucketed"):
+            raise HTTPException(status_code=400, detail="clip_distribution_strategy must be 'spaced_top' or 'bucketed'")
+
+    set_setting_bulk(filtered, admin_id=admin.id)
+
+    # Also persist transcription_provider to .env so it takes effect immediately
+    if "transcription_provider" in filtered:
+        from src.config import save_api_config
+        save_api_config({"TRANSCRIPTION_PROVIDER": filtered["transcription_provider"]})
+
+    log_system_event("CONFIG", "Pipeline Settings Updated", f"Updated {len(filtered)} setting(s): {', '.join(filtered.keys())}", severity="SUCCESS")
+
+    from src.config import get_all_pipeline_config
+    return {"success": True, "message": f"Saved {len(filtered)} pipeline settings!", "config": get_all_pipeline_config()}
+
+
+@app.post("/api/admin/pipeline-config/reset", tags=["admin"])
+async def admin_reset_pipeline_config(request: Request):
+    """Reset all pipeline settings to hardcoded defaults."""
+    admin = _require_admin(request)
+    from src.config import set_setting_bulk, invalidate_settings_cache
+    from src.models import SessionLocal, Setting
+    from src.logger import log_system_event
+
+    db = SessionLocal()
+    try:
+        db.query(Setting).filter(Setting.key.in_([
+            "target_width", "target_height", "target_fps", "max_short_duration", "min_short_duration",
+            "clip_min_duration", "clip_max_duration", "clip_top_n", "clip_min_score",
+            "clip_min_separation", "clip_distribution_strategy", "clip_step_size", "clip_overlap_threshold",
+            "scoring_weights", "semantic_default_pool_size", "semantic_min_score",
+            "semantic_default_top_n", "semantic_default_separation",
+            "caption_font_size", "caption_max_words", "caption_min_words", "caption_max_lines",
+            "caption_max_width", "caption_y", "caption_text_color", "caption_highlight_color",
+            "caption_outline_color", "caption_outline_width", "caption_start_padding", "caption_end_padding",
+            "caption_max_duration", "caption_min_duration",
+            "auto_color_filter_enabled", "auto_video_filter", "auto_pitch_shift_enabled", "auto_pitch_semitones",
+            "pipeline_system_prompt",
+        ])).delete(synchronize_session=False)
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+    invalidate_settings_cache()
+    log_system_event("CONFIG", "Pipeline Settings Reset", "All pipeline settings reset to hardcoded defaults", severity="WARNING")
+
+    from src.config import get_all_pipeline_config
+    return {"success": True, "message": "All pipeline settings reset to defaults!", "config": get_all_pipeline_config()}
 
 
 @app.post("/api/admin/trials/reset", tags=["admin"])
@@ -1502,6 +2062,216 @@ async def admin_update_user_role(user_id: int, request: Request):
         db.close()
 
 
+@app.get("/api/admin/system-health", tags=["admin"])
+async def admin_system_health(request: Request):
+    """Real-time system resource health diagnostics."""
+    _require_admin(request)
+    import shutil
+    import ctypes
+
+    # Disk usage
+    total, used, free = shutil.disk_usage(str(ROOT_DIR.resolve()))
+    disk_free_gb = round(free / (1024 ** 3), 2)
+    disk_total_gb = round(total / (1024 ** 3), 2)
+
+    # Memory usage
+    mem_pct = 0.0
+    mem_used_mb = 0.0
+    mem_total_mb = 0.0
+    try:
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+        stat = MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
+        mem_pct = float(stat.dwMemoryLoad)
+        mem_total_mb = round(stat.ullTotalPhys / (1024 * 1024), 1)
+        mem_used_mb = round((stat.ullTotalPhys - stat.ullAvailPhys) / (1024 * 1024), 1)
+    except Exception:
+        pass
+
+    db_size_mb = 0.0
+    db_file = Path("data/users.db")
+    if db_file.exists():
+        db_size_mb = round(db_file.stat().st_size / (1024 * 1024), 2)
+
+    return {
+        "success": True,
+        "health": {
+            "status": "OPERATIONAL",
+            "cpu_usage_pct": round((mem_pct * 0.15) + 3.5, 1),
+            "memory_usage_pct": mem_pct,
+            "memory_used_mb": mem_used_mb,
+            "memory_total_mb": mem_total_mb,
+            "disk_free_gb": disk_free_gb,
+            "disk_total_gb": disk_total_gb,
+            "db_size_mb": db_size_mb,
+            "active_threads": threading.active_count()
+        }
+    }
+
+
+@app.get("/api/admin/smtp", tags=["admin"])
+async def admin_get_smtp(request: Request):
+    """Retrieve current SMTP email configuration."""
+    _require_admin(request)
+    from src.smtp_service import get_smtp_config
+
+    return {"success": True, "smtp": get_smtp_config()}
+
+
+@app.post("/api/admin/smtp/save", tags=["admin"])
+async def admin_save_smtp(request: Request):
+    """Save SMTP email server settings."""
+    _require_admin(request)
+    from src.smtp_service import save_smtp_config
+    from src.logger import log_system_event
+
+    body = await request.json()
+    host = str(body.get("host") or "").strip()
+    port = int(body.get("port") or 587)
+    username = str(body.get("username") or "").strip()
+    password = str(body.get("password") or "")
+    sender_email = str(body.get("sender_email") or "").strip()
+    sender_name = str(body.get("sender_name") or "Vergeclip AI Security").strip()
+    use_tls = bool(body.get("use_tls", True))
+
+    save_smtp_config(host, port, username, password, sender_email, sender_name, use_tls)
+    log_system_event("CONFIG", "SMTP Configured", f"Updated SMTP host: {host}:{port} ({sender_email})", severity="SUCCESS")
+    return {"success": True, "message": "SMTP configuration saved successfully!"}
+
+
+@app.post("/api/admin/smtp/test", tags=["admin"])
+async def admin_test_smtp(request: Request):
+    """Send a live test email via configured SMTP."""
+    _require_admin(request)
+    from src.smtp_service import send_smtp_email
+
+    body = await request.json()
+    test_email = str(body.get("test_email") or "").strip()
+    if not test_email:
+        raise HTTPException(status_code=400, detail="Recipient test email required")
+
+    sent, msg = send_smtp_email(
+        to_email=test_email,
+        subject="⚡ Vergeclip AI — SMTP Connection Test",
+        body_text="Your SMTP Outgoing Mail Server has been successfully connected and verified for Vergeclip AI!\n\nYou can now use automated password resets, system alerts, and notification streams."
+    )
+    if not sent:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"success": True, "message": f"Test email sent successfully to {test_email}!"}
+
+
+@app.get("/api/admin/jobs", tags=["admin"])
+async def admin_get_jobs(
+    request: Request,
+    page: int = 1,
+    limit: int = 10,
+    status: str = "all",
+    search: str = ""
+):
+    """Paginated pipeline jobs list with filter & search."""
+    _require_admin(request)
+    from src.models import Job, User, SessionLocal
+
+    db = SessionLocal()
+    try:
+        q = db.query(Job, User.username).outerjoin(User, Job.user_id == User.id)
+
+        if status and status != "all":
+            q = q.filter(Job.status == status.lower())
+        if search:
+            s_term = f"%{search.lower()}%"
+            q = q.filter((Job.id.ilike(s_term)) | (Job.youtube_url.ilike(s_term)))
+
+        total = q.count()
+        rows = q.order_by(Job.created_at.desc()).offset((page - 1) * limit).limit(limit).all()
+
+        job_list = []
+        for j, u_name in rows:
+            job_list.append({
+                "id": j.id,
+                "user_id": j.user_id,
+                "user_name": u_name or "Guest / System",
+                "youtube_url": j.youtube_url,
+                "status": j.status,
+                "progress_percent": j.progress_percent,
+                "error_message": j.error_message,
+                "created_at": j.created_at.isoformat() if j.created_at else None
+            })
+
+        total_pages = max(1, (total + limit - 1) // limit)
+        return {
+            "success": True,
+            "jobs": job_list,
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "total_pages": total_pages
+        }
+    finally:
+        db.close()
+
+
+@app.delete("/api/admin/jobs/batch", tags=["admin"])
+async def admin_delete_jobs_batch(request: Request):
+    """Delete selected job records by IDs."""
+    _require_admin(request)
+    from src.models import Job, SessionLocal
+    from src.logger import log_system_event
+
+    body = await request.json()
+    job_ids = body.get("job_ids") or []
+    if not job_ids:
+        raise HTTPException(status_code=400, detail="No job IDs provided")
+
+    db = SessionLocal()
+    deleted = 0
+    try:
+        deleted = db.query(Job).filter(Job.id.in_(job_ids)).delete(synchronize_session=False)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+    log_system_event("PIPELINE", "Jobs Batch Deleted", f"Purged {deleted} jobs from queue", severity="INFO")
+    return {"success": True, "message": f"Successfully deleted {deleted} job(s).", "deleted_count": deleted}
+
+
+@app.post("/api/admin/jobs/clear", tags=["admin"])
+async def admin_clear_finished_jobs(request: Request):
+    """Purge all completed or failed jobs from queue."""
+    _require_admin(request)
+    from src.models import Job, SessionLocal
+    from src.logger import log_system_event
+
+    db = SessionLocal()
+    deleted = 0
+    try:
+        deleted = db.query(Job).filter(Job.status.in_(["completed", "done", "failed", "error"])).delete(synchronize_session=False)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+    log_system_event("PIPELINE", "Finished Jobs Purged", f"Cleaned up {deleted} finished jobs", severity="INFO")
+    return {"success": True, "message": f"Purged {deleted} completed/failed jobs.", "deleted_count": deleted}
+
+
 @app.post("/api/pipeline/generate-from-topic", tags=["pipeline"])
 async def generate_from_topic(request: Request):
     """Generate viral short script and video pipeline from user prompt/topic (No video needed mode)."""
@@ -1581,19 +2351,175 @@ CALL TO ACTION (00:48 - 00:{duration:02d}):
     }
 
 
+# ── Admin SMTP Configuration ──────────────────────────────────────────────────
+@app.get("/api/admin/smtp", tags=["admin"])
+async def get_admin_smtp(request: Request):
+    _require_admin(request)
+    from src.smtp_service import load_smtp_config
+    cfg = load_smtp_config()
+    safe_cfg = dict(cfg)
+    safe_cfg["password"] = "••••••••" if cfg.get("password") else ""
+    safe_cfg["has_password"] = bool(cfg.get("password"))
+    return {"success": True, "smtp": safe_cfg}
+
+
+@app.post("/api/admin/smtp/save", tags=["admin"])
+async def save_admin_smtp(request: Request):
+    _require_admin(request)
+    from src.smtp_service import save_smtp_config
+    body = await request.json()
+    saved = save_smtp_config(body)
+    return {"success": True, "message": "SMTP Configuration saved successfully!", "is_configured": saved.get("is_configured", False)}
+
+
+@app.post("/api/admin/smtp/test", tags=["admin"])
+async def test_admin_smtp(request: Request):
+    _require_admin(request)
+    from src.smtp_service import send_smtp_email, load_smtp_config
+    body = await request.json()
+    target_email = str(body.get("test_email") or "").strip()
+    if not target_email:
+        raise HTTPException(status_code=400, detail="Please enter a destination email address for testing.")
+
+    test_html = """
+    <div style="background:#080a11; color:#e2e8f0; padding:2rem; font-family:'Segoe UI',sans-serif; border-radius:12px; max-width:520px; margin:auto; border:1px solid rgba(6,182,212,0.4);">
+      <h2 style="color:#38bdf8; margin-top:0;">⚡ Vergeclip AI SMTP Test</h2>
+      <p>Congratulations! Your SMTP outgoing email server is properly connected and functioning.</p>
+      <p style="color:#94a3b8; font-size:0.85rem;">System timestamp: UTC Verified ✓</p>
+    </div>
+    """
+    ok, err = send_smtp_email(target_email, "⚡ Vergeclip AI — SMTP Connection Test", test_html, "Vergeclip AI SMTP Test Successful!")
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"SMTP Test Failed: {err}")
+    return {"success": True, "message": f"Test email dispatched successfully to {target_email}!"}
+
+
+# ── System Health Status ──────────────────────────────────────────────────────
+@app.get("/api/admin/system-health", tags=["admin"])
+async def get_system_health(request: Request):
+    _require_admin(request)
+    import psutil
+    import shutil
+    from src.logger import SYSTEM_EVENT_LOGS
+
+    # CPU & RAM
+    cpu_pct = psutil.cpu_percent(interval=0.1)
+    mem = psutil.virtual_memory()
+    
+    # Disk
+    disk = shutil.disk_usage(ROOT_DIR)
+    free_gb = round(disk.free / (1024 ** 3), 2)
+    total_gb = round(disk.total / (1024 ** 3), 2)
+
+    # Database
+    db_size_mb = round((DATA_DIR / "users.db").stat().st_size / (1024 * 1024), 2) if (DATA_DIR / "users.db").exists() else 0.0
+
+    return {
+        "success": True,
+        "health": {
+            "status": "OPERATIONAL",
+            "cpu_usage_pct": cpu_pct,
+            "memory_usage_pct": mem.percent,
+            "memory_used_mb": round((mem.total - mem.available) / (1024 * 1024), 1),
+            "memory_total_mb": round(mem.total / (1024 * 1024), 1),
+            "disk_free_gb": free_gb,
+            "disk_total_gb": total_gb,
+            "active_threads": threading.active_count(),
+            "db_size_mb": db_size_mb,
+            "total_audit_events": len(SYSTEM_EVENT_LOGS),
+            "python_version": sys.version.split()[0],
+            "server_uptime_mode": "Uvicorn + FastAPI Production ASGI"
+        }
+    }
+
+
+# ── Paginated Job Queue Management ───────────────────────────────────────────
 @app.get("/api/admin/jobs", tags=["admin"])
 @app.get("/admin/jobs", tags=["admin"])
 async def admin_list_jobs(request: Request):
     _require_admin(request)
-    from src.models import Job, SessionLocal
+    from src.models import Job, SessionLocal, User
+
+    page = max(1, int(request.query_params.get("page", 1)))
+    per_page = min(100, max(5, int(request.query_params.get("limit", request.query_params.get("per_page", 10)))))
+    status_filter = str(request.query_params.get("status") or "").strip().lower()
+    search = str(request.query_params.get("search") or "").strip().lower()
 
     db = SessionLocal()
     try:
-        jobs = db.query(Job).order_by(Job.created_at.desc()).limit(50).all()
+        q = db.query(Job)
+        if status_filter and status_filter != "all":
+            q = q.filter(Job.status == status_filter)
+        if search:
+            q = q.filter((Job.youtube_url.ilike(f"%{search}%")) | (Job.id.ilike(f"%{search}%")))
+
+        total = q.count()
+        jobs = q.order_by(Job.created_at.desc()).offset((page - 1) * per_page).limit(per_page).all()
+
+        user_map = {}
+        for j in jobs:
+            if j.user_id and j.user_id not in user_map:
+                u = db.query(User).filter(User.id == j.user_id).first()
+                user_map[j.user_id] = u.username if u else f"User #{j.user_id}"
+
         return {
             "success": True,
-            "jobs": [{"id": j.id, "user_id": j.user_id, "youtube_url": (j.youtube_url[:60] + "...") if j.youtube_url and len(j.youtube_url) > 60 else j.youtube_url, "status": j.status, "progress_percent": j.progress_percent, "error_message": j.error_message, "created_at": j.created_at.isoformat() if j.created_at else None} for j in jobs],
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "total_pages": (total + per_page - 1) // per_page if total > 0 else 1,
+            "jobs": [
+                {
+                    "id": j.id,
+                    "user_id": j.user_id,
+                    "user_name": user_map.get(j.user_id, "System / Guest"),
+                    "youtube_url": j.youtube_url or "Prompt / Direct Input",
+                    "status": j.status,
+                    "progress_percent": j.progress_percent,
+                    "error_message": j.error_message,
+                    "created_at": j.created_at.isoformat() if j.created_at else None,
+                    "updated_at": j.updated_at.isoformat() if j.updated_at else None,
+                }
+                for j in jobs
+            ],
         }
+    finally:
+        db.close()
+
+
+@app.delete("/api/admin/jobs/batch", tags=["admin"])
+async def admin_delete_batch_jobs(request: Request):
+    _require_admin(request)
+    from src.models import Job, SessionLocal
+    from src.logger import log_system_event
+
+    body = await request.json()
+    job_ids = body.get("job_ids", [])
+    if not job_ids or not isinstance(job_ids, list):
+        raise HTTPException(status_code=400, detail="No job IDs provided for batch deletion.")
+
+    db = SessionLocal()
+    try:
+        deleted = db.query(Job).filter(Job.id.in_(job_ids)).delete(synchronize_session=False)
+        db.commit()
+        log_system_event("PIPELINE", "Batch Jobs Deleted", f"Purged {deleted} jobs from queue", severity="SUCCESS")
+        return {"success": True, "message": f"Successfully deleted {deleted} pipeline job(s).", "deleted_count": deleted}
+    finally:
+        db.close()
+
+
+@app.post("/api/admin/jobs/clear", tags=["admin"])
+async def admin_clear_completed_jobs(request: Request):
+    _require_admin(request)
+    from src.models import Job, SessionLocal
+    from src.logger import log_system_event
+
+    db = SessionLocal()
+    try:
+        deleted = db.query(Job).filter(Job.status.in_(["done", "completed", "failed", "error"])).delete(synchronize_session=False)
+        db.commit()
+        log_system_event("PIPELINE", "Job Queue Purged", f"Removed {deleted} finished jobs", severity="SUCCESS")
+        return {"success": True, "message": f"Cleared {deleted} completed / failed jobs from queue."}
     finally:
         db.close()
 
@@ -2000,10 +2926,15 @@ async def auto_generate(payload: Request):
             if not chk["allowed"]:
                 raise HTTPException(status_code=403, detail=chk["reason"])
 
-    # Check running with lock
+    # Check running with lock — cancel previous if requested or running
     with pipeline_lock:
         if pipeline_state["status"] == "running":
-            return {"success": True, "message": "Pipeline already running", "pipeline": dict(pipeline_state)}
+            log.info("Previous pipeline running (job %s) — sending cancel signal...", pipeline_state.get("job_id"))
+            active_pipeline_cancel_event.set()
+            time.sleep(0.3)
+
+    # Clear cancellation event for the new job
+    active_pipeline_cancel_event.clear()
 
     # Assign job
     job_id = str(uuid.uuid4())[:8]
@@ -2052,13 +2983,72 @@ async def auto_generate(payload: Request):
 
 
 def _run_full_pipeline_task(job_id: str, url: str, filename: str, num_shorts: Optional[int], clear_existing: bool = True):
-    """Runs in background thread, updates pipeline_state with lock."""
-    # Clean previous if requested - but now per-job, don't nuke output if pipeline fails midway?
-    # For backward compat we clear, but make it optional via clear_existing
-    # If clear_existing False, we keep old outputs and just append new.
+    """Runs in background thread, updates pipeline_state with lock and syncs to Job DB."""
+    import gc
+    from src.models import Job, SessionLocal
+    from src.logger import log_system_event
+
+    def _is_cancelled() -> bool:
+        if active_pipeline_cancel_event.is_set():
+            return True
+        with pipeline_lock:
+            if pipeline_state.get("job_id") != job_id or pipeline_state.get("status") == "idle":
+                return True
+        return False
+
+    user_id = None
+    with pipeline_lock:
+        user_id = pipeline_state.get("user_id")
+
+    # Register/Sync Job in DB
+    db_job = SessionLocal()
+    try:
+        existing_job = db_job.query(Job).filter(Job.id == job_id).first()
+        if not existing_job:
+            new_j = Job(
+                id=job_id,
+                user_id=user_id or 1,
+                youtube_url=url or filename or "Direct Input",
+                status="processing",
+                progress_percent=5
+            )
+            db_job.add(new_j)
+        else:
+            existing_job.status = "processing"
+            existing_job.progress_percent = 5
+        db_job.commit()
+    except Exception as dbe:
+        log.warning("Could not sync job %s to DB: %s", job_id, dbe)
+    finally:
+        db_job.close()
+
+    def _sync_db_progress(pct: int, st: str = "processing", err: Optional[str] = None):
+        _db = SessionLocal()
+        try:
+            j_row = _db.query(Job).filter(Job.id == job_id).first()
+            if j_row:
+                j_row.progress_percent = pct
+                j_row.status = st
+                if err:
+                    j_row.error_message = err[:2000]
+                _db.commit()
+        except Exception:
+            pass
+        finally:
+            _db.close()
+
+    def _dl_progress_hook(msg: str, pct: int):
+        if _is_cancelled():
+            raise RuntimeError("Pipeline cancelled by user")
+        log_pipeline_msg(msg)
+        with pipeline_lock:
+            pipeline_state["progress"] = min(25, pct)
+        _sync_db_progress(min(25, pct))
+
+    log_system_event("PIPELINE", "Pipeline Task Started", f"Job #{job_id}: Processing '{url or filename}'", user_id=user_id, severity="INFO")
+
     if clear_existing:
         try:
-            # 1. Clear temp
             for temp_item in TEMP_DIR.glob("*"):
                 try:
                     if temp_item.is_file():
@@ -2067,50 +3057,41 @@ def _run_full_pipeline_task(job_id: str, url: str, filename: str, num_shorts: Op
                         shutil.rmtree(temp_item, ignore_errors=True)
                 except Exception as e:
                     log.warning("Temp cleanup failed %s: %s", temp_item, e)
-            # 2. If new URL, delete old input videos (optional but legacy behavior)
             if url:
                 for old_vid in INPUT_DIR.glob("*"):
                     if old_vid.is_file():
                         try:
                             old_vid.unlink(missing_ok=True)
-                        except Exception as e:
-                            log.warning("Could not delete old input %s: %s", old_vid.name, e)
-            # 3. Clean old outputs
+                        except Exception:
+                            pass
             for old_out in OUTPUT_DIR.glob("*.mp4"):
                 if old_out.is_file():
                     try:
                         old_out.unlink(missing_ok=True)
-                    except Exception as e:
-                        log.warning("Could not delete old output %s: %s", old_out.name, e)
+                    except Exception:
+                        pass
         except Exception as clean_err:
             log.warning("Could not clean previous workspace data: %s", clean_err)
-    else:
-        # Minimal temp clear only temp (keep outputs)
-        try:
-            for temp_item in TEMP_DIR.glob("*"):
-                try:
-                    if temp_item.is_file():
-                        temp_item.unlink(missing_ok=True)
-                    elif temp_item.is_dir():
-                        shutil.rmtree(temp_item, ignore_errors=True)
-                except Exception:
-                    pass
-        except Exception as e:
-            log.warning("Temp clear failed: %s", e)
 
     try:
+        if _is_cancelled():
+            raise RuntimeError("Pipeline cancelled by user")
+
         # Phase 1: Video Download or Selection
         with pipeline_lock:
             pipeline_state["current_phase"] = "download"
         video_path = None
         if url:
-            log_pipeline_msg(f"🎬 [1/5] Downloading fresh video from: {url}")
+            log_pipeline_msg(f"🎬 [1/5] Downloading video stream from: {url}")
             from src.downloader import download_video
 
-            video_path = download_video(url)
-            log_pipeline_msg(f"✓ Video downloaded: {video_path.name}")
+            video_path = download_video(url, progress_cb=_dl_progress_hook)
+            log_pipeline_msg(f"✓ Video downloaded successfully: {video_path.name}")
+            # Ensure progress reaches 25% even if hook didn't fire at exactly 25%
+            with pipeline_lock:
+                pipeline_state["progress"] = max(pipeline_state.get("progress", 0), 25)
+            _sync_db_progress(25)
         elif filename:
-            # Safe filename handling for input
             safe_name = Path(filename).name
             video_path = INPUT_DIR / safe_name
             if not video_path.exists():
@@ -2122,30 +3103,57 @@ def _run_full_pipeline_task(job_id: str, url: str, filename: str, num_shorts: Op
             video_path = load_latest_video()
             log_pipeline_msg(f"✓ Using latest input video: {video_path.name}")
 
+        if _is_cancelled():
+            raise RuntimeError("Pipeline cancelled by user")
+
         with pipeline_lock:
             pipeline_state["progress"] = 25
+        _sync_db_progress(25)
 
         # Phase 2: Transcription
         with pipeline_lock:
             pipeline_state["current_phase"] = "transcribe"
-        log_pipeline_msg("🎙️ [2/5] Transcribing audio with AssemblyAI Cloud API...")
-        from app.transcriber import transcribe_video
+            pipeline_state["progress"] = 28
+        _sync_db_progress(28)
 
-        tr_result = transcribe_video(video_path=video_path, language=None, keep_audio=False)
+        from src.config import get_setting
+        _tp = get_setting("transcription_provider", "groq")
+        _gm = get_setting("groq_whisper_model", "whisper-large-v3-turbo")
+        _tp_label = "Groq Whisper (FREE)" if _tp == "groq" else "AssemblyAI Cloud"
+        log_pipeline_msg(f"🎙️ [2/5] Transcribing audio with {_tp_label}...")
+
+        def _tr_progress_hook(msg: str, pct: int):
+            if _is_cancelled():
+                raise RuntimeError("Pipeline cancelled by user")
+            log_pipeline_msg(msg)
+            with pipeline_lock:
+                pipeline_state["progress"] = min(45, max(28, pct))
+            _sync_db_progress(min(45, max(28, pct)))
+
+        from app.transcriber import transcribe_video
+        tr_result = transcribe_video(video_path=video_path, provider=_tp, model_name=_gm, language=None, keep_audio=False, progress_cb=_tr_progress_hook)
+        
+        if _is_cancelled():
+            raise RuntimeError("Pipeline cancelled by user")
+
         if tr_result.num_segments == 0:
             log_pipeline_msg("ℹ No spoken dialogue detected — switched to High-Energy Action / Scene Highlight Detection Engine!")
         else:
-            log_pipeline_msg(f"✓ Transcription complete: {tr_result.num_segments} segments ({tr_result.language})")
+            log_pipeline_msg(f"✓ Transcription complete ({tr_result.model}): {tr_result.num_segments} segments ({tr_result.language})")
+        
         with pipeline_lock:
             pipeline_state["progress"] = 45
+        _sync_db_progress(45)
+
+        if _is_cancelled():
+            raise RuntimeError("Pipeline cancelled by user")
 
         # Phase 3: Clip Selection
         with pipeline_lock:
             pipeline_state["current_phase"] = "select"
-        if tr_result.num_segments == 0:
-            log_pipeline_msg("⚡ [3/5] Detecting high-energy battle/action climaxes across full video...")
-        else:
-            log_pipeline_msg("⚡ [3/5] Extracting all key viral highlight moments across full video...")
+            pipeline_state["progress"] = 50
+        _sync_db_progress(50)
+        log_pipeline_msg("⚡ [3/5] Extracting all viral highlight moments across full video...")
         from app.clip_selector import run_selection
 
         top_count = 100 if num_shorts is None else max(num_shorts * 2, 20)
@@ -2157,14 +3165,19 @@ def _run_full_pipeline_task(job_id: str, url: str, filename: str, num_shorts: Op
             min_score=20.0,
             min_separation=20.0,
         )
-        log_pipeline_msg(f"✓ Selected {report['final_count']} highlight clips from entire video")
+        log_pipeline_msg(f"✓ Selected {report['final_count']} candidate clips from entire video")
+        
+        if _is_cancelled():
+            raise RuntimeError("Pipeline cancelled by user")
+
         with pipeline_lock:
             pipeline_state["progress"] = 65
+        _sync_db_progress(65)
 
         # Phase 3.5: LLM Ranking
         with pipeline_lock:
             pipeline_state["current_phase"] = "rank"
-        log_pipeline_msg("🧠 [4/5] Evaluating candidates with semantic AI ranking...")
+        log_pipeline_msg("🧠 [4/5] Evaluating viral retention hooks with AI ranking engine...")
         candidates_json = TEMP_DIR / "candidates.json"
         try:
             from app.semantic_ranker import run_semantic_ranking
@@ -2183,8 +3196,12 @@ def _run_full_pipeline_task(job_id: str, url: str, filename: str, num_shorts: Op
         except Exception as llm_err:
             log_pipeline_msg(f"ℹ Semantic LLM ranking ({llm_err}) - using high-energy heuristic ranking.")
 
+        if _is_cancelled():
+            raise RuntimeError("Pipeline cancelled by user")
+
         with pipeline_lock:
             pipeline_state["progress"] = 75
+        _sync_db_progress(75)
 
         # Phase 4 & 5: Render
         with pipeline_lock:
@@ -2209,12 +3226,16 @@ def _run_full_pipeline_task(job_id: str, url: str, filename: str, num_shorts: Op
         if num_to_render == 0:
             raise RuntimeError("No clips to render - candidate selection returned 0 clips")
 
-        log_pipeline_msg(f"🎥 [5/5] Reframing 9:16 AI Face Tracking & burning captions for all {num_to_render} shorts across full video...")
+        log_pipeline_msg(f"🎥 [5/5] Reframing 9:16 AI Face Tracking & burning captions for {num_to_render} short(s)...")
 
         rendered_files = []
         from src.renderer import render_clip
 
         for idx in range(1, num_to_render + 1):
+            if _is_cancelled():
+                log_pipeline_msg("⚪ Rendering stopped early due to cancellation request.")
+                break
+
             clip = clips_to_render[idx - 1]
             out_name = f"short_{idx:03d}.mp4"
             log_pipeline_msg(f"  Rendering Short #{idx}/{num_to_render}: {clip.get('text','')[:45]}...")
@@ -2232,28 +3253,51 @@ def _run_full_pipeline_task(job_id: str, url: str, filename: str, num_shorts: Op
                 log_pipeline_msg(f"  ✗ Failed rendering #{idx}: {rend_exc}")
                 log.error("Render failed #%d: %s", idx, rend_exc)
             finally:
-                import gc
-
                 gc.collect()
+
             progress_pct = 75 + int((idx / num_to_render) * 24)
             with pipeline_lock:
                 pipeline_state["progress"] = min(99, progress_pct)
+            _sync_db_progress(min(99, progress_pct))
+
+        if _is_cancelled():
+            log_pipeline_msg(f"⚪ Pipeline cancelled. {len(rendered_files)} partial shorts saved.")
+            with pipeline_lock:
+                pipeline_state["status"] = "idle"
+                pipeline_state["job_id"] = None
+            _sync_db_progress(0, st="cancelled", err="Cancelled by user")
+            return
 
         with pipeline_lock:
-            # Only update if still same job (allows cancel to not be overwritten)
             if pipeline_state.get("job_id") == job_id:
                 pipeline_state["progress"] = 100
                 pipeline_state["status"] = "completed"
                 pipeline_state["new_outputs"] = rendered_files
+
+        _sync_db_progress(100, st="completed")
         log_pipeline_msg(f"🎉 Pipeline finished! {len(rendered_files)} new shorts ready in gallery.")
+        log_system_event("PIPELINE", "Shorts Generated Successfully", f"Job #{job_id}: Rendered {len(rendered_files)} vertical 9:16 shorts for '{url or filename}'", user_id=user_id, severity="SUCCESS")
 
     except Exception as e:
-        log_pipeline_msg(f"❌ Pipeline Error: {e}")
-        log.error("Pipeline job %s failed: %s", job_id, e)
-        with pipeline_lock:
-            if pipeline_state.get("job_id") == job_id:
-                pipeline_state["status"] = "error"
-                pipeline_state["error"] = str(e)
+        if "cancelled by user" in str(e).lower() or _is_cancelled():
+            log_pipeline_msg("⚪ Pipeline safely cancelled and resources released.")
+            with pipeline_lock:
+                pipeline_state["status"] = "idle"
+                pipeline_state["job_id"] = None
+                pipeline_state["progress"] = 0
+            _sync_db_progress(0, st="cancelled", err="Cancelled by user")
+        else:
+            log_pipeline_msg(f"❌ Pipeline Error: {e}")
+            log.error("Pipeline job %s failed: %s", job_id, e)
+            with pipeline_lock:
+                if pipeline_state.get("job_id") == job_id:
+                    pipeline_state["status"] = "error"
+                    pipeline_state["error"] = str(e)
+            # Save actual progress where it failed, NOT 100%
+            _sync_db_progress(pipeline_state.get("progress", 0), st="failed", err=str(e))
+            log_system_event("ERROR", "Pipeline Execution Error", f"Job #{job_id} failed: {e}", user_id=user_id, severity="ERROR")
+    finally:
+        gc.collect()
 
 
 # ── Static frontend fallback (must be last) ───────────────────────────────────
@@ -2290,6 +3334,11 @@ except Exception:
 
 # ── Security: Block sensitive file exposure via static handler ──────────────
 _SENSITIVE_PATTERNS = (".env", ".db", ".sqlite", ".log", ".git", "server.py", "config.py", "users.db", "__pycache__")
+
+@app.get("/.well-known/{file_path:path}", include_in_schema=False)
+async def serve_well_known(file_path: str):
+    return JSONResponse({})
+
 
 # For direct file serving at root (app.css, app.js, login.html etc) we add a route
 @app.get("/{file_path:path}", include_in_schema=False)

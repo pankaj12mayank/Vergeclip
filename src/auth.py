@@ -315,6 +315,24 @@ def update_user_password(user_id: int, old_password: str, new_password: str) -> 
         conn.close()
 
 
+def reset_user_password_by_id(user_id: int, new_password: str) -> bool:
+    """Reset password directly without requiring old password (used by password reset tokens)."""
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    conn = _get_conn()
+    try:
+        cur = conn.execute("SELECT id FROM users WHERE id=?", (user_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="User not found")
+        new_hash = hash_password(new_password)
+        conn.execute("UPDATE users SET hashed_password=? WHERE id=?", (new_hash, user_id))
+        conn.commit()
+        log.info("Password reset successfully for user_id %s", user_id)
+        return True
+    finally:
+        conn.close()
+
+
 def update_user_profile(user_id: int, new_username: Optional[str] = None, new_email: Optional[str] = None) -> UserPublic:
     conn = _get_conn()
     try:

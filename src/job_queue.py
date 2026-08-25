@@ -84,6 +84,9 @@ def _process_one_job(job: Job, db: Session):
         try:
             job.status = "failed"
             job.error_message = str(e)[:2000]
+            # Preserve actual progress where it failed (don't force 100%)
+            if job.progress_percent < 5:
+                job.progress_percent = 5
             db.commit()
         except Exception:
             pass

@@ -169,13 +169,16 @@ class Setting(Base):
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    admin_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    key = Column(String(100), nullable=False)
-    old_value = Column(Text, nullable=True)
-    new_value = Column(Text, nullable=True)
-    tested = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
-    __table_args__ = (Index("idx_audit_key", "key"),)
+    event_id = Column(String(20), unique=True, nullable=False, index=True)
+    category = Column(String(50), nullable=False, index=True)
+    action = Column(String(200), nullable=False)
+    detail = Column(Text, nullable=True)
+    user_id = Column(String(50), nullable=True)
+    severity = Column(String(20), default="INFO", nullable=False)
+    ip = Column(String(50), default="127.0.0.1")
+    request_data = Column(Text, nullable=True)
+    response_data = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
 
 
 class DeviceTrial(Base):
@@ -191,11 +194,41 @@ class DeviceTrial(Base):
     __table_args__ = (Index("idx_device_id", "device_id"),)
 
 
+class CustomProvider(Base):
+    __tablename__ = "custom_providers"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False)  # display name: "Groq Free", "DeepSeek Production"
+    provider_type = Column(String(50), nullable=False, default="custom_openai")  # groq | deepseek | openrouter | custom_openai | ollama
+    base_url = Column(String(500), nullable=False)
+    api_key = Column(String(500), nullable=True)
+    model = Column(String(200), nullable=False)
+    is_active = Column(Boolean, default=False, nullable=False)  # only one active at a time
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+
+
 # ── Create tables + migrate existing users table ──────────────────────────────
 def init_db():
     """Create all tables and migrate existing `users` if needed."""
     # Create all if not exists
     Base.metadata.create_all(bind=engine)
+
+    # Migrate audit_logs table if schema changed (old schema had key/old_value/new_value, new has event_id/category/action)
+    if str(engine.url).startswith("sqlite"):
+        import sqlite3 as _sqlite3
+        _db_path = str(engine.url).replace("sqlite:///", "")
+        if _db_path.startswith("/") and ":" in _db_path[1:4]:
+            _db_path = _db_path[1:]
+        try:
+            _conn = _sqlite3.connect(_db_path)
+            _cur = _conn.execute("PRAGMA table_info(audit_logs)")
+            _audit_cols = {row[1] for row in _cur.fetchall()}
+            if "event_id" not in _audit_cols and _audit_cols:
+                _conn.execute("DROP TABLE IF EXISTS audit_logs")
+                _conn.commit()
+            _conn.close()
+        except Exception:
+            pass
 
     # Migrate existing raw users table: add role/tier if missing (for SQLite)
     if str(engine.url).startswith("sqlite"):
@@ -359,6 +392,69 @@ def init_db():
             else:
                 p = Prompt(**pdata)
                 db.add(p)
+        db.commit()
+
+        # Seed default pipeline settings (only if not already set)
+        import json as _json
+        default_settings = {
+            # Video Specs
+            "target_width": "1080",
+            "target_height": "1920",
+            "target_fps": "30",
+            "max_short_duration": "60",
+            "min_short_duration": "15",
+            # Clip Selection
+            "clip_min_duration": "15.0",
+            "clip_max_duration": "20.0",
+            "clip_top_n": "30",
+            "clip_min_score": "30.0",
+            "clip_min_separation": "90.0",
+            "clip_distribution_strategy": "spaced_top",
+            "clip_step_size": "1.5",
+            "clip_overlap_threshold": "0.4",
+            # Scoring Weights (stored as JSON dict)
+            "scoring_weights": _json.dumps({
+                "hook_question": 22.0, "hook_bold_claim": 18.0, "hook_surprising": 18.0,
+                "hook_formulaic_power": 16.0, "hook_imperative": 15.0, "hook_story_intro": 14.0,
+                "hook_number_stat": 12.0, "body_question": 8.0, "body_contrast": 8.0,
+                "body_educational": 8.0, "body_statistics": 7.0, "body_storytelling": 6.0,
+                "body_emotional": 6.0, "body_surprise": 6.0, "standalone_subject_intro": 12.0,
+                "complete_thought": 12.0, "clean_sentence_start": 8.0, "high_confidence": 5.0,
+                "good_pacing": 4.0, "penalty_dangling_open": -25.0, "penalty_weak_filler_open": -20.0,
+                "penalty_unresolved_pronoun": -18.0, "penalty_incomplete_end": -15.0,
+                "penalty_context_dependent": -15.0, "penalty_filler_dense": -10.0,
+                "penalty_low_confidence": -8.0, "penalty_sparse_words": -8.0,
+            }),
+            # Semantic Ranking
+            "semantic_default_pool_size": "100",
+            "semantic_min_score": "40.0",
+            "semantic_default_top_n": "30",
+            "semantic_default_separation": "90.0",
+            # Caption Settings
+            "caption_font_size": "82",
+            "caption_max_words": "5",
+            "caption_min_words": "2",
+            "caption_max_lines": "2",
+            "caption_max_width": "900",
+            "caption_y": "1450",
+            "caption_text_color": "255,255,255",
+            "caption_highlight_color": "255,230,0",
+            "caption_outline_color": "0,0,0",
+            "caption_outline_width": "6",
+            "caption_start_padding": "0.0",
+            "caption_end_padding": "0.05",
+            "caption_max_duration": "2.5",
+            "caption_min_duration": "0.4",
+            # Enhancement
+            "auto_color_filter_enabled": "true",
+            "auto_video_filter": "eq=contrast=1.06:saturation=1.12:brightness=0.01,unsharp=5:5:0.35:3:3:0.0",
+            "auto_pitch_shift_enabled": "true",
+            "auto_pitch_semitones": "0.5",
+        }
+        for skey, sval in default_settings.items():
+            existing_setting = db.query(Setting).filter(Setting.key == skey).first()
+            if not existing_setting:
+                db.add(Setting(key=skey, value=sval, is_secret=False))
         db.commit()
 
         # Ensure default admin has role admin

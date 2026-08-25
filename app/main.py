@@ -154,15 +154,21 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
             return 1
 
     language = getattr(args, "language", None) or None
+    from src.config import get_setting
+    _tp = get_setting("transcription_provider", "assemblyai")
+    _gm = get_setting("groq_whisper_model", "whisper-large-v3-turbo")
+    _tp_label = "Groq Whisper (FREE)" if _tp == "groq" else "AssemblyAI Cloud"
 
-    print(f"\n{Fore.CYAN}[ Phase 2 — AssemblyAI Cloud Transcription ]{Style.RESET_ALL}")
+    print(f"\n{Fore.CYAN}[ Phase 2 — {_tp_label} Transcription ]{Style.RESET_ALL}")
     print(f"  Video  : {video_path.name}")
-    print(f"  API    : AssemblyAI Cloud")
+    print(f"  API    : {_tp_label}")
     print(f"  Lang   : {language or 'auto-detect'}\n")
 
     try:
         result = transcribe_video(
             video_path=video_path,
+            provider=_tp,
+            model_name=_gm,
             language=language,
             keep_audio=getattr(args, "keep_audio", False),
         )

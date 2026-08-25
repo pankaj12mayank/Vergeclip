@@ -37,9 +37,8 @@ def check_and_increment_quota(user_id: int, db: Session, limit: int | None = Non
     # Get limit from settings if not passed
     if limit is None:
         try:
-            from src.config import settings
-
-            limit = getattr(settings, "FREE_TIER_MONTHLY_LIMIT", 5) if settings else 5
+            from src.config import get_setting
+            limit = int(get_setting("FREE_TIER_MONTHLY_LIMIT", "5"))
         except Exception:
             limit = 5
     month = _month_year_now()
@@ -78,9 +77,8 @@ def get_quota_remaining(user_id: int, db: Session) -> dict:
 
     if not quota:
         try:
-            from src.config import settings
-
-            limit = getattr(settings, "FREE_TIER_MONTHLY_LIMIT", 5) if settings else 5
+            from src.config import get_setting
+            limit = int(get_setting("FREE_TIER_MONTHLY_LIMIT", "5"))
         except Exception:
             limit = 5
         return {"month_year": month, "videos_processed": 0, "videos_limit": limit, "remaining": limit, "is_owner": False}

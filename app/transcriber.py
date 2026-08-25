@@ -24,7 +24,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable, Any
 
 from src.config import (
     AUDIO_TEMP_FILENAME,
@@ -172,6 +172,122 @@ def extract_audio(
             raise RuntimeError(f"FFmpeg audio extraction failed:\n{proc.stderr}")
 
     return output_audio_path
+
+
+# ── AssemblyAI Cloud Transcription ─────────────────────────────────────────────
+
+def transcribe_with_groq_whisper(
+    audio_path: Path,
+    api_key: str = "",
+    model: str = "whisper-large-v3-turbo",
+    language: Optional[str] = None,
+) -> tuple[list[Segment], str]:
+    """
+    Transcribe audio via Groq Whisper API — FREE tier (2,000 req/day, ~8 hrs audio/day).
+    Uses OpenAI-compatible /v1/audio/transcriptions endpoint.
+    """
+    key = api_key.strip()
+    if not key:
+        raise ValueError("No Groq API key provided. Set GROQ_API_KEY in environment or .env.")
+
+    if not audio_path.exists() or audio_path.stat().st_size == 0:
+        raise FileNotFoundError(f"Audio file for transcription not found or empty: {audio_path}")
+
+    import urllib.request, urllib.parse, json as _json
+
+    # Build multipart form data manually (no external dependency)
+    boundary = "----VergeclipBoundary" + str(int(time.time()))
+    file_data = audio_path.read_bytes()
+
+    body = b""
+    # model field
+    body += f"--{boundary}\r\n".encode()
+    body += b'Content-Disposition: form-data; name="model"\r\n\r\n'
+    body += f"{model}\r\n".encode()
+    # response_format
+    body += f"--{boundary}\r\n".encode()
+    body += b'Content-Disposition: form-data; name="response_format"\r\n\r\n'
+    body += b"verbose_json\r\n"
+    # language (optional)
+    if language:
+        body += f"--{boundary}\r\n".encode()
+        body += b'Content-Disposition: form-data; name="language"\r\n\r\n'
+        body += f"{language}\r\n".encode()
+    # timestamp_granularities[]
+    body += f"--{boundary}\r\n".encode()
+    body += b'Content-Disposition: form-data; name="timestamp_granularities[]"\r\n\r\n'
+    body += b"word\r\n"
+    body += f"--{boundary}\r\n".encode()
+    body += b'Content-Disposition: form-data; name="timestamp_granularities[]"\r\n\r\n'
+    body += b"segment\r\n"
+    # file
+    body += f"--{boundary}\r\n".encode()
+    body += f'Content-Disposition: form-data; name="file"; filename="{audio_path.name}"\r\n'.encode()
+    body += b"Content-Type: audio/mpeg\r\n\r\n"
+    body += file_data
+    body += f"\r\n--{boundary}--\r\n".encode()
+
+    url = "https://api.groq.com/openai/v1/audio/transcriptions"
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "User-Agent": "Vergeclip/1.0",
+        },
+        method="POST",
+    )
+
+    log.info("Transcribing audio via Groq Whisper (%s)...", audio_path.name)
+    t0 = time.time()
+
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        result_data = _json.loads(resp.read().decode("utf-8"))
+
+    elapsed = time.time() - t0
+    log.info("Groq Whisper responded in %.1fs", elapsed)
+
+    # Parse verbose_json response
+    segments: list[Segment] = []
+    detected_lang = result_data.get("language", language or "en")
+
+    # Word-level timestamps from segments
+    if result_data.get("segments"):
+        for idx, seg in enumerate(result_data["segments"]):
+            words = []
+            for w in seg.get("words", []):
+                words.append({
+                    "word": w.get("word", ""),
+                    "start": round(w.get("start", 0), 3),
+                    "end": round(w.get("end", 0), 3),
+                    "probability": round(w.get("probability", 1.0), 3),
+                })
+            segments.append(Segment(
+                id=idx,
+                start=round(seg.get("start", 0), 3),
+                end=round(seg.get("end", 0), 3),
+                text=seg.get("text", ""),
+                avg_logprob=0.0,
+                no_speech_prob=0.0,
+                words=words,
+            ))
+    elif result_data.get("text"):
+        # Fallback: single segment from text response
+        segments.append(Segment(
+            id=0,
+            start=0.0,
+            end=result_data.get("duration", 0.0),
+            text=result_data["text"],
+            avg_logprob=0.0,
+            no_speech_prob=0.0,
+            words=[],
+        ))
+
+    if not segments:
+        log.info("Groq Whisper detected no spoken speech in audio.")
+
+    return segments, detected_lang
 
 
 # ── AssemblyAI Cloud Transcription ─────────────────────────────────────────────
@@ -355,38 +471,82 @@ def transcribe_with_assemblyai(
 def transcribe_video(
     video_path: Optional[Path] = None,
     *,
-    provider: Optional[str] = "assemblyai",
+    provider: Optional[str] = None,
     model_name: Optional[str] = None,
     language: Optional[str] = None,
     keep_audio: bool = False,
     json_path: Optional[Path] = None,
     txt_path: Optional[Path] = None,
+    progress_cb: Optional[Callable[[str, int], None]] = None,
 ) -> TranscriptResult:
     """
-    Full Phase 2 pipeline: extract audio -> transcribe with AssemblyAI -> save transcripts.
+    Full Phase 2 pipeline: extract audio -> transcribe with provider -> save transcripts.
+    Provider: "groq" (FREE whisper-large-v3-turbo) or "assemblyai".
+    Auto-fallback: if primary provider fails or no key, tries the other.
     """
-    from src.config import ASSEMBLYAI_API_KEY
+    from src.config import ASSEMBLYAI_API_KEY, GROQ_API_KEY, TRANSCRIPTION_PROVIDER
+
+    active_provider = (provider or os.environ.get("TRANSCRIPTION_PROVIDER", "") or TRANSCRIPTION_PROVIDER or "groq").lower().strip()
 
     # ── Resolve video ──────────────────────────────────────────────────────────
     if video_path is None:
         video_path = load_latest_video()
 
     # ── Extract audio ──────────────────────────────────────────────────────────
+    if progress_cb:
+        progress_cb("🎵 Extracting audio stream from video...", 28)
     audio_path = TEMP_DIR / "extracted_audio.mp3"
     extract_audio(video_path, audio_path)
 
     active_assembly_key = (os.environ.get("ASSEMBLYAI_API_KEY", "") or ASSEMBLYAI_API_KEY).strip()
-    if not active_assembly_key:
-        raise ValueError(
-            "ASSEMBLYAI_API_KEY is not set. Please provide ASSEMBLYAI_API_KEY in your environment or .env file."
-        )
+    active_groq_key = (os.environ.get("GROQ_API_KEY", "") or GROQ_API_KEY).strip()
 
-    log.info("🚀 Starting AssemblyAI Cloud transcription for '%s'...", video_path.name)
-    segments, detected_lang = transcribe_with_assemblyai(
-        audio_path=audio_path,
-        api_key=active_assembly_key,
-        language_code=language,
-    )
+    segments: list[Segment] = []
+    detected_lang = "en"
+    used_provider = active_provider
+    model_label = "unknown"
+
+    def _try_groq() -> tuple[list[Segment], str]:
+        if not active_groq_key:
+            raise ValueError("GROQ_API_KEY not set")
+        groq_model = model_name or "whisper-large-v3-turbo"
+        log.info("Transcribing via Groq Whisper (%s)...", groq_model)
+        if progress_cb:
+            progress_cb(f"🎙️ Transcribing with Groq Whisper ({groq_model})...", 35)
+        return transcribe_with_groq_whisper(audio_path=audio_path, api_key=active_groq_key, model=groq_model, language=language)
+
+    def _try_assemblyai() -> tuple[list[Segment], str]:
+        if not active_assembly_key:
+            raise ValueError("ASSEMBLYAI_API_KEY not set")
+        log.info("Transcribing via AssemblyAI Cloud API...")
+        if progress_cb:
+            progress_cb("🎙️ Transcribing with AssemblyAI Cloud Engine...", 35)
+        return transcribe_with_assemblyai(audio_path=audio_path, api_key=active_assembly_key, language_code=language)
+
+    # Provider order: chosen first, fallback second (default to ultra-fast Groq Whisper)
+    if active_provider == "assemblyai":
+        providers = [("assemblyai", _try_assemblyai), ("groq", _try_groq)]
+    else:
+        providers = [("groq", _try_groq), ("assemblyai", _try_assemblyai)]
+
+    last_err = None
+    for prov_name, prov_fn in providers:
+        try:
+            segments, detected_lang = prov_fn()
+            used_provider = prov_name
+            model_label = "groq-whisper-v3-turbo" if prov_name == "groq" else "assemblyai-universal"
+            break
+        except Exception as e:
+            last_err = e
+            log.warning("Transcription provider '%s' failed: %s — trying next...", prov_name, e)
+            if progress_cb:
+                progress_cb(f"ℹ Provider {prov_name} busy, trying fallback engine...", 38)
+            continue
+    else:
+        raise RuntimeError(
+            f"All transcription providers failed. Last error: {last_err}\n"
+            "Set at least one of: GROQ_API_KEY or ASSEMBLYAI_API_KEY in .env"
+        )
 
     total_media_dur = _get_video_file_duration(video_path)
     final_duration = segments[-1].end if segments else total_media_dur
@@ -394,11 +554,16 @@ def transcribe_video(
         final_duration = total_media_dur
 
     if not segments:
-        log.info("No spoken dialogue detected by AssemblyAI — Visual highlight engine will score scene energy.")
+        log.info("No spoken dialogue detected — Visual highlight engine will score scene energy.")
+        if progress_cb:
+            progress_cb("ℹ No spoken dialogue — activating scene rhythm detector...", 44)
+    else:
+        if progress_cb:
+            progress_cb(f"✓ Transcribed {len(segments)} segments ({detected_lang})", 45)
 
     result = TranscriptResult(
         video_file=video_path.name,
-        model="assemblyai-universal",
+        model=model_label,
         device="cloud",
         compute_type="api",
         language=detected_lang,
@@ -408,7 +573,8 @@ def transcribe_video(
     )
 
     log.info(
-        "✓ Transcription complete: %d segments, %.1f min speech (media duration %.1f min).",
+        "✓ Transcription complete (%s): %d segments, %.1f min speech (media duration %.1f min).",
+        used_provider,
         result.num_segments,
         (segments[-1].end / 60) if segments else 0.0,
         final_duration / 60,

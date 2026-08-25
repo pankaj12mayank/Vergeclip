@@ -42,27 +42,10 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from src.config import (
-    AUTO_COLOR_FILTER_ENABLED,
-    AUTO_PITCH_SEMITONES,
-    AUTO_PITCH_SHIFT_ENABLED,
-    AUTO_VIDEO_FILTER,
-    CAPTION_END_PADDING,
-    CAPTION_FONT_SIZE,
-    CAPTION_HIGHLIGHT_COLOR,
-    CAPTION_MAX_DURATION,
-    CAPTION_MAX_LINES,
-    CAPTION_MAX_WIDTH,
-    CAPTION_MAX_WORDS,
-    CAPTION_MIN_DURATION,
-    CAPTION_MIN_WORDS,
-    CAPTION_OUTLINE_COLOR,
-    CAPTION_OUTLINE_WIDTH,
-    CAPTION_START_PADDING,
-    CAPTION_TEXT_COLOR,
-    CAPTION_Y,
     FFMPEG_BIN,
-    TARGET_HEIGHT,
-    TARGET_WIDTH,
+    get_caption_config,
+    get_enhancement_config,
+    get_video_spec_config,
 )
 from src.logger import get_logger
 
@@ -145,8 +128,10 @@ def _lookup_emoji(word_text: str) -> Optional[str]:
     return EMOJI_MAP.get(clean)
 
 
-def _get_emoji_font(size: int = CAPTION_FONT_SIZE) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+def _get_emoji_font(size: int = None) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     """Load Segoe UI Emoji font on Windows for rich color emojis."""
+    if size is None:
+        size = get_caption_config()["caption_font_size"]
     for p in ["C:/Windows/Fonts/seguiemj.ttf", "C:/Windows/Fonts/SegoeIcons.ttf"]:
         if Path(p).exists():
             try:
@@ -158,11 +143,13 @@ def _get_emoji_font(size: int = CAPTION_FONT_SIZE) -> ImageFont.FreeTypeFont | I
 
 # ─── Font Discovery ───────────────────────────────────────────────────────────
 
-def _get_font(size: int = CAPTION_FONT_SIZE) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+def _get_font(size: int = None) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     """
     Discover and load a bold modern font on Windows with multi-language (Hindi/Devanagari, Latin) support.
     Prefers Nirmala UI (Windows Indic/Hindi default), Segoe UI Bold, Mangal, Arial Bold.
     """
+    if size is None:
+        size = get_caption_config()["caption_font_size"]
     font_candidates = [
         ("C:/Windows/Fonts/Nirmala.ttc", 0),       # Nirmala UI (Full Devanagari/Hindi & Latin support)
         ("C:/Windows/Fonts/NirmalaB.ttf", None),   # Nirmala UI Bold
@@ -285,7 +272,7 @@ def _extract_clip_words(
 def wrap_caption_words(
     words: list[WordTimed],
     font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
-    max_width: int = CAPTION_MAX_WIDTH,
+    max_width: int = None,
 ) -> list[list[WordTimed]]:
     """
     Wrap words into at most 2 lines fitting within max_width using exact font metrics.
@@ -293,6 +280,8 @@ def wrap_caption_words(
       Line 1: 2-3 words
       Line 2: 1-3 words
     """
+    if max_width is None:
+        max_width = get_caption_config()["caption_max_width"]
     if not words:
         return []
 
@@ -346,8 +335,8 @@ def build_caption_chunks(
     clip_start: float,
     clip_end: float,
     clip_media_path: Optional[Path] = None,
-    max_words: int = CAPTION_MAX_WORDS,
-    min_words: int = CAPTION_MIN_WORDS,
+    max_words: int = None,
+    min_words: int = None,
     max_duration: float = 1.85,
     font: Optional[ImageFont.FreeTypeFont | ImageFont.ImageFont] = None,
     debug: bool = False,
@@ -355,7 +344,12 @@ def build_caption_chunks(
     """
     Build short-form caption chunks strictly synchronized to Whisper word timestamps.
     """
-    font_obj = font or _get_font(CAPTION_FONT_SIZE)
+    _cfg = get_caption_config()
+    if max_words is None:
+        max_words = _cfg["caption_max_words"]
+    if min_words is None:
+        min_words = _cfg["caption_min_words"]
+    font_obj = font or _get_font(_cfg["caption_font_size"])
     words, is_word_timed = _extract_clip_words(
         segments=segments,
         clip_start=clip_start,
@@ -382,10 +376,10 @@ def build_caption_chunks(
         if not curr_words:
             return
 
-        c_start = max(0.0, curr_words[0].start - CAPTION_START_PADDING)
-        c_end = curr_words[-1].end + CAPTION_END_PADDING
+        c_start = max(0.0, curr_words[0].start - _cfg["caption_start_padding"])
+        c_end = curr_words[-1].end + _cfg["caption_end_padding"]
         c_text = " ".join(w.word for w in curr_words).strip()
-        lines = wrap_caption_words(curr_words, font_obj, CAPTION_MAX_WIDTH)
+        lines = wrap_caption_words(curr_words, font_obj, _cfg["caption_max_width"])
 
         chunks.append(
             CaptionChunk(
@@ -479,7 +473,7 @@ def validate_caption_chunks(
             invalid_count += 1
         if c.start < 0.0 or c.end <= c.start or c.end > clip_duration + 0.15:
             invalid_count += 1
-        if len(c.lines) > CAPTION_MAX_LINES:
+        if len(c.lines) > get_caption_config()["caption_max_lines"]:
             invalid_count += 1
         max_lines = max(max_lines, len(c.lines))
 
@@ -523,10 +517,12 @@ def _draw_caption_frame(
     """
     Render active caption chunk with active-word highlighting & rich emojis onto frame.
     """
+    _cfg = get_caption_config()
+    _vspec = get_video_spec_config()
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     pil_img = Image.fromarray(frame_rgb)
     draw = ImageDraw.Draw(pil_img)
-    emoji_font = _get_emoji_font(int(CAPTION_FONT_SIZE * 0.9))
+    emoji_font = _get_emoji_font(int(_cfg["caption_font_size"] * 0.9))
 
     # 1. Identify active word in chunk
     active_word_idx = -1
@@ -549,7 +545,7 @@ def _draw_caption_frame(
     num_lines = len(chunk.lines)
     total_block_h = num_lines * line_h + (num_lines - 1) * line_spacing
 
-    y_start = CAPTION_Y - (total_block_h // 2)
+    y_start = _cfg["caption_y"] - (total_block_h // 2)
     space_w = draw.textbbox((0, 0), " ", font=font)[2] - draw.textbbox((0, 0), " ", font=font)[0]
 
     # 3. Draw each line centered horizontally
@@ -562,12 +558,12 @@ def _draw_caption_frame(
             word_widths.append(bbox[2] - bbox[0])
 
         total_line_w = sum(word_widths) + (len(line_words) - 1) * space_w
-        x = (TARGET_WIDTH - total_line_w) // 2
+        x = (_vspec["target_width"] - total_line_w) // 2
 
         for w, w_w in zip(line_words, word_widths):
             w_str = w.word
             is_active = (active_word_obj is not None and w is active_word_obj)
-            text_color = CAPTION_HIGHLIGHT_COLOR if is_active else CAPTION_TEXT_COLOR
+            text_color = _cfg["caption_highlight_color"] if is_active else _cfg["caption_text_color"]
 
             # Split text and emoji if present
             emoji_match = re.search(r'([\U00010000-\U0010ffff\u2600-\u27ff\u2300-\u23ff\u2b50])', w_str)
@@ -577,11 +573,11 @@ def _draw_caption_frame(
                 txt_part = w_str.replace(em_char, "").strip()
                 
                 # Draw text part with thick outline
-                out_w = CAPTION_OUTLINE_WIDTH
+                out_w = _cfg["caption_outline_width"]
                 for dx in range(-out_w, out_w + 1, 2):
                     for dy in range(-out_w, out_w + 1, 2):
                         if dx != 0 or dy != 0:
-                            draw.text((x + dx, y + dy), txt_part, font=font, fill=CAPTION_OUTLINE_COLOR)
+                            draw.text((x + dx, y + dy), txt_part, font=font, fill=_cfg["caption_outline_color"])
                 
                 draw.text((x, y), txt_part, font=font, fill=text_color)
                 
@@ -594,11 +590,11 @@ def _draw_caption_frame(
                     draw.text((em_x, y), em_char, font=font, fill=(255, 230, 0))
             else:
                 # Normal word: Draw thick dark outline (8-directional stroke)
-                out_w = CAPTION_OUTLINE_WIDTH
+                out_w = _cfg["caption_outline_width"]
                 for dx in range(-out_w, out_w + 1, 2):
                     for dy in range(-out_w, out_w + 1, 2):
                         if dx != 0 or dy != 0:
-                            draw.text((x + dx, y + dy), w_str, font=font, fill=CAPTION_OUTLINE_COLOR)
+                            draw.text((x + dx, y + dy), w_str, font=font, fill=_cfg["caption_outline_color"])
 
                 draw.text((x, y), w_str, font=font, fill=text_color)
 
@@ -609,10 +605,13 @@ def _draw_caption_frame(
     return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
 
-def _build_final_audio_filter(pitch_semitones: float = AUTO_PITCH_SEMITONES) -> str:
+def _build_final_audio_filter(pitch_semitones: float = None) -> str:
     """Build FFmpeg audio filter chain with pitch shifting and loudness normalization."""
+    _enh = get_enhancement_config()
+    if pitch_semitones is None:
+        pitch_semitones = _enh["auto_pitch_semitones"]
     parts = []
-    if AUTO_PITCH_SHIFT_ENABLED and abs(pitch_semitones) > 0.01:
+    if _enh["auto_pitch_shift_enabled"] and abs(pitch_semitones) > 0.01:
         factor = 2.0 ** (pitch_semitones / 12.0)
         sample_rate = 48000
         parts.append(f"asetrate={int(sample_rate * factor)}")
@@ -641,6 +640,8 @@ def render_captions_on_video(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     audio_src = audio_source or input_video
     audio_filter = _build_final_audio_filter()
+    _enh = get_enhancement_config()
+    _cfg = get_caption_config()
 
     # ── Fast path: No caption chunks (non-dialogue / action content) ─────────
     if not caption_chunks:
@@ -657,8 +658,8 @@ def render_captions_on_video(
             "-tune", "fastdecode",
             "-pix_fmt", "yuv420p",
         ]
-        if AUTO_COLOR_FILTER_ENABLED and AUTO_VIDEO_FILTER:
-            cmd.extend(["-vf", AUTO_VIDEO_FILTER])
+        if _enh["auto_color_filter_enabled"] and _enh["auto_video_filter"]:
+            cmd.extend(["-vf", _enh["auto_video_filter"]])
         cmd.extend([
             "-c:a", "aac",
             "-b:a", "192k",
@@ -686,7 +687,7 @@ def render_captions_on_video(
     frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    font = _get_font(CAPTION_FONT_SIZE)
+    font = _get_font(_cfg["caption_font_size"])
 
     log.info(
         "Burning Phase 5 captions onto %dx%d video @ %.2ffps (%d frames, %d chunks)",
@@ -743,8 +744,8 @@ def render_captions_on_video(
         "-pix_fmt", "yuv420p",
         "-r", str(fps),
     ]
-    if AUTO_COLOR_FILTER_ENABLED and AUTO_VIDEO_FILTER:
-        cmd.extend(["-vf", AUTO_VIDEO_FILTER])
+    if _enh["auto_color_filter_enabled"] and _enh["auto_video_filter"]:
+        cmd.extend(["-vf", _enh["auto_video_filter"]])
     cmd.extend([
         "-c:a", "aac",
         "-b:a", "192k",

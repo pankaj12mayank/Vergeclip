@@ -26,7 +26,7 @@
             <span class="logo-icon">🎙️</span>
             <span class="logo-text">Verge<span class="logo-accent">clip</span></span>
           </a>
-          <button class="sidebar-toggle-btn" onclick="toggleAdminSidebar(false)" style="width:30px; height:30px; display:inline-flex;">✕</button>
+          <button class="sidebar-toggle-btn" onclick="toggleAdminSidebar(false)" title="Close sidebar">✕</button>
         </div>
 
         <nav>
@@ -53,6 +53,12 @@
               <button class="admin-nav-item-btn" data-tab="jobs" onclick="switchTab('jobs')">
                 <span class="admin-nav-icon">🎬</span>
                 <span>Job Queue</span>
+              </button>
+            </li>
+            <li>
+              <button class="admin-nav-item-btn" data-tab="pipeline" onclick="switchTab('pipeline')">
+                <span class="admin-nav-icon">🔧</span>
+                <span>Pipeline Settings</span>
               </button>
             </li>
             <li>
@@ -101,7 +107,8 @@
           </div>
         </div>
 
-        <div style="display:flex; gap:0.75rem; align-items:center;">
+        <div style="display:flex; gap:0.6rem; align-items:center;">
+          <button class="btn-outline btn-sm" onclick="openChangePasswordModal()" title="Change Admin Password">🔑 Password</button>
           <button class="btn-outline btn-sm" onclick="loadAll()">↻ Sync All</button>
         </div>
       </header>
@@ -144,55 +151,63 @@
         <!-- ── 1. Config & Keys Tab ── -->
         <section id="panel-config" class="admin-panel active">
           
-          <!-- Custom OpenAI-Compatible LLM Configurator -->
+          <!-- ── Outgoing SMTP Mail Server Settings ── -->
           <div class="admin-card">
             <div class="admin-card-header">
               <div>
-                <h3 class="admin-card-title">🤖 OpenAI-Compatible Custom AI Provider</h3>
-                <p class="admin-card-desc">Connect any LLM endpoint (Groq, DeepSeek, OpenRouter, vLLM, Ollama, LMStudio) as your primary video ranking & script engine.</p>
+                <h3 class="admin-card-title">📧 Outgoing SMTP Mail Server (Password Recovery & Alerts)</h3>
+                <p class="admin-card-desc">Configure SMTP credentials to enable password reset emails, user recovery, and system notifications.</p>
               </div>
             </div>
-            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:1rem;">
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:1rem;">
               <div>
-                <label class="auth-label">Primary AI Provider</label>
-                <select id="ai_provider_select" class="admin-input">
-                  <option value="gemini">Google Gemini (Gemini 2.5 Flash - Default)</option>
-                  <option value="openai">OpenAI (GPT-4o-mini / GPT-4o)</option>
-                  <option value="custom_openai">Custom OpenAI-Compatible Endpoint</option>
-                  <option value="ollama">Ollama (Local / Self-Hosted)</option>
-                </select>
+                <label class="auth-label">SMTP Host</label>
+                <input id="smtp_host" class="admin-input" placeholder="e.g. smtp.gmail.com or smtp.mailgun.org" />
               </div>
               <div>
-                <label class="auth-label">API Base URL</label>
-                <input id="custom_ai_base_url" class="admin-input" placeholder="e.g. https://api.groq.com/openai/v1 or https://openrouter.ai/api/v1" />
+                <label class="auth-label">Port</label>
+                <input id="smtp_port" class="admin-input" type="number" placeholder="587" />
               </div>
               <div>
-                <label class="auth-label">Model Identifier</label>
-                <input id="custom_ai_model" class="admin-input" placeholder="e.g. llama-3.3-70b-versatile or deepseek-r1" />
+                <label class="auth-label">Username / Account</label>
+                <input id="smtp_username" class="admin-input" placeholder="user@gmail.com" />
               </div>
               <div>
-                <label class="auth-label">Custom API Key</label>
+                <label class="auth-label">Password / App Password</label>
                 <div style="position:relative; display:flex; align-items:center;">
-                  <input id="custom_ai_api_key" type="password" class="admin-input" placeholder="sk-..." style="padding-right:2.5rem;" />
-                  <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('custom_ai_api_key', this)" style="right:10px;">👁️</button>
+                  <input id="smtp_password" type="password" class="admin-input" placeholder="Enter SMTP password" style="padding-right:2.5rem;" />
+                  <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('smtp_password', this)" style="right:10px;">👁️</button>
                 </div>
               </div>
+              <div>
+                <label class="auth-label">Sender Email Address</label>
+                <input id="smtp_sender_email" class="admin-input" placeholder="no-reply@yourdomain.com" />
+              </div>
+              <div>
+                <label class="auth-label">Sender Display Name</label>
+                <input id="smtp_sender_name" class="admin-input" placeholder="Vergeclip AI Security" />
+              </div>
             </div>
-            <div style="display:flex; justify-content:flex-end; gap:0.75rem; margin-top:1.25rem;">
-              <button class="btn-outline btn-sm" onclick="testCustomAI()">⚡ Test Live LLM Connection</button>
-              <button class="btn-primary btn-sm" onclick="saveCustomAI()">💾 Save & Set as Primary AI</button>
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:1rem; margin-top:1.25rem; padding-top:1rem; border-top:1px solid var(--border-subtle);">
+              <div style="display:flex; align-items:center; gap:0.5rem;">
+                <input id="smtp_test_email" class="admin-input" placeholder="Enter recipient email to test..." style="width:260px;" />
+                <button class="btn-outline btn-sm" onclick="testSmtpConnection()">⚡ Test SMTP Email</button>
+              </div>
+              <button class="btn-primary btn-sm" onclick="saveSmtpSettings()">💾 Save SMTP Configuration</button>
             </div>
-            <div id="custom_ai_test_output" style="display:none; margin-top:1rem; padding:0.9rem; background:#07090e; border-radius:8px; font-size:0.85rem; border:1px solid var(--border-subtle);"></div>
           </div>
 
           <div class="admin-card">
             <div class="admin-card-header">
               <div>
-                <h3 class="admin-card-title">🔑 Individual Core API Keys</h3>
-                <p class="admin-card-desc">Configure AssemblyAI, VideoSailor, Google, and OpenAI keys with live connection verification.</p>
+                <h3 class="admin-card-title">🔑 Core API Keys & AI Providers</h3>
+                <p class="admin-card-desc">Configure VideoSailor, AssemblyAI, Google Gemini, and custom OpenAI-compatible AI providers with live connection verification.</p>
               </div>
+              <button class="btn-primary btn-sm" onclick="openAddProviderModal()" style="display:inline-flex; align-items:center; gap:0.4rem;">
+                ➕ Add Custom AI Provider
+              </button>
             </div>
-            <div id="configKeys" style="display:flex; flex-direction:column; gap:1rem;"></div>
+            <div id="configKeys" style="display:flex; flex-direction:column; gap:1.25rem;"></div>
           </div>
 
           <div class="admin-card">
@@ -247,22 +262,60 @@
           </div>
         </section>
 
-        <!-- ── 4. Jobs Tab ── -->
+        <!-- ── 4. Jobs Tab (Paginated & Multi-Select Batch Delete) ── -->
         <section id="panel-jobs" class="admin-panel">
           <div class="admin-card">
-            <div class="admin-card-header">
+            <div class="admin-card-header" style="flex-wrap:wrap; gap:1rem;">
               <div>
                 <h3 class="admin-card-title">🎬 Pipeline Job Queue</h3>
-                <p class="admin-card-desc">Real-time status of all active, queued, and completed video generation tasks.</p>
+                <p class="admin-card-desc">Real-time status, progress tracking, and batch lifecycle management of all video rendering jobs.</p>
+              </div>
+              <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center;">
+                <button id="btnDeleteJobsBatch" class="btn-outline btn-sm btn-danger-outline" style="display:none;" onclick="deleteSelectedJobs()">
+                  🗑️ Delete Selected (<span id="selectedJobsCount">0</span>)
+                </button>
+                <button class="btn-outline btn-sm" onclick="clearCompletedJobs()" title="Purge all completed/failed jobs">
+                  🧹 Clear Finished
+                </button>
+                <button class="btn-primary btn-sm" onclick="loadJobs(1, true)">↻ Refresh Queue</button>
               </div>
             </div>
+
+            <!-- Job Filters Bar -->
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem; margin-bottom:1rem; padding:0.5rem 0; border-bottom:1px solid var(--border-subtle);">
+              <div style="display:flex; gap:0.6rem; align-items:center; flex:1; max-width:400px;">
+                <input id="jobSearchInput" class="admin-input" placeholder="Search by Job ID or URL..." style="padding:0.35rem 0.75rem; font-size:0.85rem;" oninput="debounceJobSearch()" />
+              </div>
+              <div style="display:flex; gap:0.75rem; align-items:center;">
+                <div style="display:flex; gap:0.4rem; align-items:center;">
+                  <span style="font-size:0.82rem; color:var(--text-muted);">Status:</span>
+                  <select id="jobStatusFilter" class="admin-input table-filter-select" onchange="loadJobs(1, false)">
+                    <option value="all">All Jobs</option>
+                    <option value="processing">⚡ Processing</option>
+                    <option value="queued">⏳ Queued</option>
+                    <option value="completed">✅ Completed</option>
+                    <option value="failed">❌ Failed</option>
+                  </select>
+                </div>
+                <div style="display:flex; gap:0.4rem; align-items:center;">
+                  <span style="font-size:0.82rem; color:var(--text-muted);">Per Page:</span>
+                  <select id="jobPerPage" class="admin-input table-filter-select" onchange="changeJobPerPage(this.value)">
+                    <option value="10" selected>10</option>
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
             <div class="admin-table-container">
               <table class="admin-table">
                 <thead>
                   <tr>
+                    <th style="width:36px;"><input type="checkbox" id="selectAllJobs" onchange="toggleSelectAllJobs(this.checked)" /></th>
                     <th>Job ID</th>
                     <th>User</th>
-                    <th>Source URL</th>
+                    <th>Source Video / URL</th>
                     <th>Status</th>
                     <th>Progress</th>
                     <th>Timestamp</th>
@@ -271,12 +324,150 @@
                 <tbody id="jobsTable"></tbody>
               </table>
             </div>
+
+            <!-- Job Pagination Footer -->
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:1rem; margin-top:1.25rem; padding-top:0.75rem; border-top:1px solid var(--border-subtle);">
+              <span id="jobPaginationInfo" style="font-size:0.85rem; color:var(--text-muted);">Showing 0 of 0 jobs</span>
+              <div id="jobPaginationControls" style="display:flex; gap:0.4rem; align-items:center;"></div>
+            </div>
+
           </div>
         </section>
 
-        <!-- ── 5. Quota Tab ── -->
+        <!-- ── 5. Pipeline Settings Tab ── -->
+        <section id="panel-pipeline" class="admin-panel">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.25rem; flex-wrap:wrap; gap:0.75rem;">
+            <div>
+              <h2 style="font-size:1.15rem; font-weight:700; color:var(--text-primary);">🔧 Pipeline Configuration</h2>
+              <p style="font-size:0.82rem; color:var(--text-muted);">Adjust video output, clip selection, scoring, captions, and enhancement settings. Changes take effect immediately.</p>
+            </div>
+            <div style="display:flex; gap:0.5rem;">
+              <button class="btn-outline btn-sm" onclick="resetPipelineConfig()">↩ Reset Defaults</button>
+              <button class="btn-primary btn-sm" onclick="savePipelineConfig()">💾 Save All Settings</button>
+            </div>
+          </div>
+
+          <!-- Transcription Engine -->
+          <div class="admin-card" style="margin-bottom:1rem; border-left:3px solid var(--accent-primary);">
+            <h3 class="admin-card-title">🎙️ Transcription Engine</h3>
+            <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:0.75rem;">Choose which speech-to-text engine powers Phase 2. Groq Whisper is FREE (8 hrs/day, no card). AssemblyAI is paid but offers speaker diarization.</p>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:0.75rem; margin-top:0.75rem;">
+              <div>
+                <label class="auth-label">Active Provider</label>
+                <select id="pc_transcription_provider" class="admin-input">
+                  <option value="groq">🆓 Groq Whisper (FREE — recommended)</option>
+                  <option value="assemblyai">💬 AssemblyAI (paid — $0.15/hr)</option>
+                </select>
+              </div>
+              <div id="groqModelWrap">
+                <label class="auth-label">Groq Model</label>
+                <select id="pc_groq_whisper_model" class="admin-input">
+                  <option value="whisper-large-v3-turbo">whisper-large-v3-turbo (FREE, 228x speed)</option>
+                  <option value="whisper-large-v3">whisper-large-v3 ($0.11/hr, highest accuracy)</option>
+                </select>
+              </div>
+            </div>
+            <button class="btn-primary btn-sm" style="margin-top:0.75rem;" onclick="saveTranscriptionEngine()">💾 Save Transcription Engine</button>
+          </div>
+
+          <!-- Video Output Specs -->
+          <div class="admin-card" style="margin-bottom:1rem;">
+            <h3 class="admin-card-title">🎬 Video Output Specification</h3>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:0.75rem; margin-top:0.75rem;">
+              <div><label class="auth-label">Width (px)</label><input id="pc_target_width" class="admin-input" type="number" min="320" max="4096" /></div>
+              <div><label class="auth-label">Height (px)</label><input id="pc_target_height" class="admin-input" type="number" min="320" max="7680" /></div>
+              <div><label class="auth-label">FPS</label><input id="pc_target_fps" class="admin-input" type="number" min="15" max="120" /></div>
+              <div><label class="auth-label">Max Duration (s)</label><input id="pc_max_short_duration" class="admin-input" type="number" min="5" max="600" /></div>
+              <div><label class="auth-label">Min Duration (s)</label><input id="pc_min_short_duration" class="admin-input" type="number" min="3" max="300" /></div>
+            </div>
+          </div>
+
+          <!-- Clip Selection -->
+          <div class="admin-card" style="margin-bottom:1rem;">
+            <h3 class="admin-card-title">✂️ Clip Selection Parameters</h3>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:0.75rem; margin-top:0.75rem;">
+              <div><label class="auth-label">Min Clip Duration (s)</label><input id="pc_clip_min_duration" class="admin-input" type="number" step="0.5" min="3" max="120" /></div>
+              <div><label class="auth-label">Max Clip Duration (s)</label><input id="pc_clip_max_duration" class="admin-input" type="number" step="0.5" min="5" max="300" /></div>
+              <div><label class="auth-label">Top N Candidates</label><input id="pc_clip_top_n" class="admin-input" type="number" min="1" max="100" /></div>
+              <div><label class="auth-label">Min Score</label><input id="pc_clip_min_score" class="admin-input" type="number" step="0.5" min="0" max="100" /></div>
+              <div><label class="auth-label">Min Separation (s)</label><input id="pc_clip_min_separation" class="admin-input" type="number" step="1" min="0" max="600" /></div>
+              <div><label class="auth-label">Step Size (s)</label><input id="pc_clip_step_size" class="admin-input" type="number" step="0.1" min="0.5" max="10" /></div>
+              <div><label class="auth-label">Overlap Threshold</label><input id="pc_clip_overlap_threshold" class="admin-input" type="number" step="0.05" min="0" max="1" /></div>
+              <div><label class="auth-label">Distribution Strategy</label>
+                <select id="pc_clip_distribution_strategy" class="admin-input">
+                  <option value="spaced_top">Spaced Top</option>
+                  <option value="bucketed">Bucketed</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- Semantic Ranking -->
+          <div class="admin-card" style="margin-bottom:1rem;">
+            <h3 class="admin-card-title">🧠 Semantic Ranking Defaults</h3>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:0.75rem; margin-top:0.75rem;">
+              <div><label class="auth-label">Pool Size</label><input id="pc_semantic_default_pool_size" class="admin-input" type="number" min="10" max="500" /></div>
+              <div><label class="auth-label">Min Score</label><input id="pc_semantic_min_score" class="admin-input" type="number" step="0.5" min="0" max="100" /></div>
+              <div><label class="auth-label">Top N</label><input id="pc_semantic_default_top_n" class="admin-input" type="number" min="1" max="100" /></div>
+              <div><label class="auth-label">Separation (s)</label><input id="pc_semantic_default_separation" class="admin-input" type="number" step="1" min="0" max="600" /></div>
+            </div>
+          </div>
+
+          <!-- Caption Settings -->
+          <div class="admin-card" style="margin-bottom:1rem;">
+            <h3 class="admin-card-title">💬 Caption Rendering</h3>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:0.75rem; margin-top:0.75rem;">
+              <div><label class="auth-label">Font Size</label><input id="pc_caption_font_size" class="admin-input" type="number" min="12" max="200" /></div>
+              <div><label class="auth-label">Max Words/Chunk</label><input id="pc_caption_max_words" class="admin-input" type="number" min="1" max="15" /></div>
+              <div><label class="auth-label">Min Words/Chunk</label><input id="pc_caption_min_words" class="admin-input" type="number" min="1" max="10" /></div>
+              <div><label class="auth-label">Max Lines</label><input id="pc_caption_max_lines" class="admin-input" type="number" min="1" max="5" /></div>
+              <div><label class="auth-label">Max Width (px)</label><input id="pc_caption_max_width" class="admin-input" type="number" min="200" max="1080" /></div>
+              <div><label class="auth-label">Y Position</label><input id="pc_caption_y" class="admin-input" type="number" min="100" max="1920" /></div>
+              <div><label class="auth-label">Text Color (R,G,B)</label><input id="pc_caption_text_color" class="admin-input" placeholder="255,255,255" /></div>
+              <div><label class="auth-label">Highlight Color (R,G,B)</label><input id="pc_caption_highlight_color" class="admin-input" placeholder="255,230,0" /></div>
+              <div><label class="auth-label">Outline Color (R,G,B)</label><input id="pc_caption_outline_color" class="admin-input" placeholder="0,0,0" /></div>
+              <div><label class="auth-label">Outline Width</label><input id="pc_caption_outline_width" class="admin-input" type="number" min="0" max="20" /></div>
+              <div><label class="auth-label">Start Padding (s)</label><input id="pc_caption_start_padding" class="admin-input" type="number" step="0.01" min="0" max="2" /></div>
+              <div><label class="auth-label">End Padding (s)</label><input id="pc_caption_end_padding" class="admin-input" type="number" step="0.01" min="0" max="2" /></div>
+              <div><label class="auth-label">Max Duration (s)</label><input id="pc_caption_max_duration" class="admin-input" type="number" step="0.1" min="0.5" max="10" /></div>
+              <div><label class="auth-label">Min Duration (s)</label><input id="pc_caption_min_duration" class="admin-input" type="number" step="0.1" min="0.1" max="5" /></div>
+            </div>
+          </div>
+
+          <!-- Enhancement -->
+          <div class="admin-card" style="margin-bottom:1rem;">
+            <h3 class="admin-card-title">✨ Auto Enhancement</h3>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:0.75rem; margin-top:0.75rem;">
+              <div style="display:flex; align-items:center; gap:0.5rem;">
+                <input id="pc_auto_color_filter_enabled" type="checkbox" style="width:18px; height:18px;" />
+                <label class="auth-label" style="margin:0;">Enable Color Filter</label>
+              </div>
+              <div style="display:flex; align-items:center; gap:0.5rem;">
+                <input id="pc_auto_pitch_shift_enabled" type="checkbox" style="width:18px; height:18px;" />
+                <label class="auth-label" style="margin:0;">Enable Pitch Shift</label>
+              </div>
+              <div><label class="auth-label">Pitch Semitones</label><input id="pc_auto_pitch_semitones" class="admin-input" type="number" step="0.1" min="-6" max="6" /></div>
+              <div style="grid-column:1/-1;"><label class="auth-label">Video Filter FFmpeg String</label><input id="pc_auto_video_filter" class="admin-input" placeholder="eq=contrast=1.06:saturation=1.12:brightness=0.01,unsharp=5:5:0.35:3:3:0.0" /></div>
+            </div>
+          </div>
+
+          <!-- AI System Prompt -->
+          <div class="admin-card" style="margin-bottom:1rem;">
+            <h3 class="admin-card-title">🤖 Main Pipeline AI Prompt</h3>
+            <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:0.5rem;">System prompt used by the semantic ranker for clip evaluation. Leave empty to use the default built-in prompt.</p>
+            <textarea id="pc_pipeline_system_prompt" class="admin-input" rows="8" style="font-family:var(--font-mono); font-size:0.8rem; resize:vertical;" placeholder="Leave empty for default system prompt..."></textarea>
+          </div>
+
+          <!-- Scoring Weights (Collapsible) -->
+          <details class="admin-card" style="margin-bottom:1rem;">
+            <summary style="cursor:pointer; font-weight:700; font-size:0.95rem; color:var(--text-primary);">⚖️ Scoring Weights (Advanced) — 28 Parameters</summary>
+            <p style="font-size:0.82rem; color:var(--text-muted); margin:0.5rem 0;">Adjust the heuristic scoring weights for clip selection. Higher values = stronger signal.</p>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:0.6rem; margin-top:0.75rem;" id="scoringWeightsGrid"></div>
+          </details>
+        </section>
+
+        <!-- ── 6. Quota Tab ── -->
         <section id="panel-quota" class="admin-panel">
-          
           <div class="admin-card">
             <div class="admin-card-header">
               <div>
@@ -299,8 +490,42 @@
           </div>
         </section>
 
-        <!-- ── 6. Audit Tab ── -->
+        <!-- ── 6. Audit & Health Tab ── -->
         <section id="panel-audit" class="admin-panel">
+          
+          <!-- System Health Live KPI Card -->
+          <div class="admin-card" style="margin-bottom:1.5rem;">
+            <div class="admin-card-header">
+              <div>
+                <h3 class="admin-card-title">🩺 Real-Time System Health & Resources</h3>
+                <p class="admin-card-desc">Live resource utilization, server ASGI worker status, and active database statistics.</p>
+              </div>
+              <button class="btn-outline btn-sm" onclick="loadSystemHealth(true)">↻ Refresh Health</button>
+            </div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:1rem; margin-top:0.75rem;" id="healthKpis">
+              <div class="kpi-card" style="padding:1.1rem;">
+                <div class="kpi-title">System Status</div>
+                <div class="kpi-value" style="font-size:1.25rem; color:#34d399;" id="healthStatus">● OPERATIONAL</div>
+              </div>
+              <div class="kpi-card" style="padding:1.1rem;">
+                <div class="kpi-title">CPU Utilization</div>
+                <div class="kpi-value" style="font-size:1.25rem; color:#38bdf8;" id="healthCpu">0%</div>
+              </div>
+              <div class="kpi-card" style="padding:1.1rem;">
+                <div class="kpi-title">Memory (RAM)</div>
+                <div class="kpi-value" style="font-size:1.25rem; color:#c084fc;" id="healthMem">0%</div>
+              </div>
+              <div class="kpi-card" style="padding:1.1rem;">
+                <div class="kpi-title">Free Storage Disk</div>
+                <div class="kpi-value" style="font-size:1.25rem; color:#f472b6;" id="healthDisk">0 GB</div>
+              </div>
+              <div class="kpi-card" style="padding:1.1rem;">
+                <div class="kpi-title">Database Size</div>
+                <div class="kpi-value" style="font-size:1.25rem; color:#fbbf24;" id="healthDb">0 MB</div>
+              </div>
+            </div>
+          </div>
+
           <div class="admin-card">
             <div class="admin-card-header" style="flex-wrap:wrap; gap:1rem;">
               <div>
@@ -322,7 +547,7 @@
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem; margin-bottom:1rem; padding:0.5rem 0; border-bottom:1px solid var(--border-subtle);">
               <div style="display:flex; gap:0.5rem; align-items:center;">
                 <span style="font-size:0.82rem; color:var(--text-muted);">Filter Severity:</span>
-                <select id="auditSeverityFilter" class="admin-input" style="padding:0.3rem 0.6rem; font-size:0.8rem; width:auto;" onchange="filterAuditLogs()">
+                <select id="auditSeverityFilter" class="admin-input table-filter-select" onchange="filterAuditLogs()">
                   <option value="ALL">All Severities</option>
                   <option value="SUCCESS">🟢 SUCCESS</option>
                   <option value="ERROR">🔴 ERROR</option>
@@ -332,7 +557,7 @@
               </div>
               <div style="display:flex; gap:0.5rem; align-items:center;">
                 <span style="font-size:0.82rem; color:var(--text-muted);">Per Page:</span>
-                <select id="auditPerPage" class="admin-input" style="padding:0.3rem 0.6rem; font-size:0.8rem; width:auto;" onchange="changeAuditPerPage(this.value)">
+                <select id="auditPerPage" class="admin-input table-filter-select" onchange="changeAuditPerPage(this.value)">
                   <option value="10" selected>10</option>
                   <option value="25">25</option>
                   <option value="50">50</option>
@@ -386,11 +611,11 @@
         </div>
         <div>
           <label class="auth-label">Request Payload / Parameters</label>
-          <pre id="auditModalReq" style="white-space:pre-wrap; background:#07090f; padding:0.9rem; border-radius:8px; font-family:monospace; font-size:0.82rem; color:#93c5fd; border:1px solid var(--border-subtle); max-height:160px; overflow:auto;">—</pre>
+          <pre id="auditModalReq" style="white-space:pre-wrap; background:#07090f; padding:0.9rem; border-radius:8px; font-family:var(--font-mono); font-size:0.82rem; color:#93c5fd; border:1px solid var(--border-subtle); max-height:160px; overflow:auto;">—</pre>
         </div>
         <div>
           <label class="auth-label">Response Data / Error Details</label>
-          <pre id="auditModalResp" style="white-space:pre-wrap; background:#07090f; padding:0.9rem; border-radius:8px; font-family:monospace; font-size:0.82rem; color:#34d399; border:1px solid var(--border-subtle); max-height:220px; overflow:auto;">—</pre>
+          <pre id="auditModalResp" style="white-space:pre-wrap; background:#07090f; padding:0.9rem; border-radius:8px; font-family:var(--font-mono); font-size:0.82rem; color:#34d399; border:1px solid var(--border-subtle); max-height:220px; overflow:auto;">—</pre>
         </div>
       </div>
     </div>
@@ -411,11 +636,11 @@
         </div>
         <div>
           <label class="auth-label">System Prompt (AI Instructions & Formatting Rules)</label>
-          <textarea id="editPromptSystem" class="admin-input" rows="9" style="font-family:monospace; font-size:0.85rem; line-height:1.55;"></textarea>
+          <textarea id="editPromptSystem" class="admin-input" rows="9" style="font-family:var(--font-mono); font-size:0.85rem; line-height:1.55;"></textarea>
         </div>
         <div>
           <label class="auth-label">User Template (Placeholders e.g. {{transcript}} or {{topic}})</label>
-          <textarea id="editPromptUser" class="admin-input" rows="3" style="font-family:monospace; font-size:0.85rem;"></textarea>
+          <textarea id="editPromptUser" class="admin-input" rows="3" style="font-family:var(--font-mono); font-size:0.85rem;"></textarea>
         </div>
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:1.25rem; align-items:flex-start;">
           <div>
@@ -453,6 +678,90 @@
         <div style="display:flex; justify-content:flex-end;">
           <button class="btn-primary btn-sm" onclick="submitCustomQuota()" style="width:100%;">🎯 Save Limit</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Add Custom AI Provider Modal ────────────────────────────── -->
+  <div id="addProviderModal" class="video-modal-backdrop" style="display:none;" onclick="closeAddProviderModal(event)">
+    <div class="video-modal-content" style="max-width:520px; padding:2rem;" onclick="event.stopPropagation()">
+      <div class="video-modal-header">
+        <h3 class="modal-title">🤖 Add Custom AI Provider</h3>
+        <button class="modal-close-btn" onclick="closeAddProviderModal()">✕</button>
+      </div>
+      <p style="font-size:0.85rem; color:var(--text-muted); margin-top:0.4rem; margin-bottom:1.25rem;">
+        Connect any OpenAI-compatible LLM (Groq, DeepSeek, OpenRouter, Ollama, etc.).
+      </p>
+      <div style="display:flex; flex-direction:column; gap:1rem;">
+        <div class="auth-field">
+          <label class="auth-label">Provider Name</label>
+          <input id="modal_provider_name" class="admin-input" placeholder="e.g. Groq Free, DeepSeek Production, Ollama Local" />
+        </div>
+        <div class="auth-field">
+          <label class="auth-label">Base URL</label>
+          <input id="modal_provider_base_url" class="admin-input" placeholder="https://api.deepseek.com/v1" />
+        </div>
+        <div class="auth-field">
+          <label class="auth-label">API Key</label>
+          <div style="position:relative; display:flex; align-items:center;">
+            <input id="modal_provider_api_key" class="admin-input" type="password" placeholder="sk-... or leave empty for local" style="padding-right:2.5rem;" />
+            <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('modal_provider_api_key', this)" style="right:10px;">👁️</button>
+          </div>
+        </div>
+        <div class="auth-field">
+          <label class="auth-label">Model <span style="color:var(--red);">*</span></label>
+          <div id="modelFetchRow" style="display:flex; gap:0.5rem; align-items:center;">
+            <input id="modal_provider_model" class="admin-input" placeholder="Click Fetch Models first" readonly style="flex:1; background:rgba(255,255,255,0.03); cursor:not-allowed;" />
+            <button type="button" class="btn-outline btn-sm" onclick="fetchModelsForModal()" id="modalFetchBtn" style="white-space:nowrap;">🔍 Fetch Models</button>
+          </div>
+          <div id="modalModelList" style="display:none; margin-top:0.5rem;">
+            <select id="modal_provider_model_select" class="admin-input" onchange="onModelSelected(this.value)">
+              <option value="">Select a model...</option>
+            </select>
+            <p style="font-size:0.72rem; color:var(--text-muted); margin-top:0.3rem;">Showing all models from this provider's API. 🆓 = free tier available.</p>
+          </div>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:0.75rem; margin-top:0.75rem;">
+          <button type="button" class="btn-outline btn-sm" onclick="testModalProvider()">⚡ Test Connection</button>
+          <button type="button" class="btn-primary btn-sm" onclick="submitAddProvider()">💾 Add & Save Provider</button>
+        </div>
+        <div id="modal_provider_test_out" style="display:none; margin-top:0.5rem; padding:0.75rem; background:#07090e; border-radius:6px; font-size:0.8rem; border:1px solid var(--border-subtle);"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Admin Change Password Modal ────────────────────────────── -->
+  <div id="changePasswordModal" class="video-modal-backdrop" style="display:none;" onclick="closeChangePasswordModal(event)">
+    <div class="video-modal-content" style="max-width:440px; padding:2rem;" onclick="event.stopPropagation()">
+      <div class="video-modal-header">
+        <h3 class="modal-title">🔑 Change Account Password</h3>
+        <button class="modal-close-btn" onclick="closeChangePasswordModal()">✕</button>
+      </div>
+      <div style="margin-top:1.25rem; display:flex; flex-direction:column; gap:1.15rem;">
+        <div class="auth-field">
+          <label class="auth-label">Current Password</label>
+          <div class="auth-input-container">
+            <input id="cp_old_password" class="auth-input" type="password" placeholder="••••••••" />
+            <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('cp_old_password', this)">👁️</button>
+          </div>
+        </div>
+        <div class="auth-field">
+          <label class="auth-label">New Password (at least 8 chars)</label>
+          <div class="auth-input-container">
+            <input id="cp_new_password" class="auth-input" type="password" placeholder="••••••••" />
+            <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('cp_new_password', this)">👁️</button>
+          </div>
+        </div>
+        <div class="auth-field">
+          <label class="auth-label">Confirm New Password</label>
+          <div class="auth-input-container">
+            <input id="cp_confirm_password" class="auth-input" type="password" placeholder="••••••••" />
+            <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('cp_confirm_password', this)">👁️</button>
+          </div>
+        </div>
+        <button class="btn-primary" onclick="submitChangePassword()" style="width:100%; justify-content:center; padding:0.8rem; margin-top:0.5rem;">
+          Update Password Now
+        </button>
       </div>
     </div>
   </div>

@@ -128,12 +128,13 @@ def log_system_event(
     response_data: dict | str | None = None
 ) -> dict:
     """
-    Log a real-time event into the audit ring-buffer and main logger with payload tracking.
+    Log a real-time event into the audit ring-buffer, DB, and main logger with payload tracking.
     Categories: "AUTH", "PIPELINE", "CONFIG", "AI_PROVIDER", "QUOTA", "ERROR", "SYSTEM"
     Severities: "INFO", "SUCCESS", "WARN", "ERROR"
     """
+    event_id = str(uuid.uuid4())[:8]
     event = {
-        "id": str(uuid.uuid4())[:8],
+        "id": event_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "category": str(category).upper(),
         "action": action,
@@ -145,6 +146,32 @@ def log_system_event(
         "response_data": response_data
     }
     SYSTEM_EVENT_LOGS.appendleft(event)
+    
+    # Persist to database
+    try:
+        from src.models import AuditLog, SessionLocal
+        import json as _json
+        db = SessionLocal()
+        try:
+            log_entry = AuditLog(
+                event_id=event_id,
+                category=event["category"],
+                action=action,
+                detail=detail,
+                user_id=event["user_id"],
+                severity=event["severity"],
+                ip=event["ip"],
+                request_data=_json.dumps(request_data) if request_data else None,
+                response_data=_json.dumps(response_data) if response_data else None,
+            )
+            db.add(log_entry)
+            db.commit()
+        except Exception:
+            db.rollback()
+        finally:
+            db.close()
+    except Exception:
+        pass
     
     # Also log to root logger
     _log = get_logger("audit")
@@ -158,19 +185,47 @@ def log_system_event(
     return event
 
 def delete_batch_audit_events(event_ids: list[str]) -> int:
-    """Delete a list of event IDs from the in-memory audit deque."""
-    global SYSTEM_EVENT_LOGS
+    """Delete audit events by event_id from both DB and in-memory deque."""
     id_set = set(event_ids)
+    # Remove from deque
+    global SYSTEM_EVENT_LOGS
     new_deque = collections.deque(
         (ev for ev in SYSTEM_EVENT_LOGS if ev.get("id") not in id_set),
         maxlen=_MAX_AUDIT_LOGS
     )
     removed = len(SYSTEM_EVENT_LOGS) - len(new_deque)
     SYSTEM_EVENT_LOGS = new_deque
+    # Remove from DB
+    try:
+        from src.models import AuditLog, SessionLocal
+        db = SessionLocal()
+        try:
+            db.query(AuditLog).filter(AuditLog.event_id.in_(id_set)).delete(synchronize_session=False)
+            db.commit()
+        except Exception:
+            db.rollback()
+        finally:
+            db.close()
+    except Exception:
+        pass
     return removed
 
 def clear_all_audit_events() -> int:
-    """Purge all in-memory audit events."""
+    """Purge all audit events from both DB and in-memory deque."""
     count = len(SYSTEM_EVENT_LOGS)
     SYSTEM_EVENT_LOGS.clear()
+    # Clear DB
+    try:
+        from src.models import AuditLog, SessionLocal
+        db = SessionLocal()
+        try:
+            count = db.query(AuditLog).count()
+            db.query(AuditLog).delete()
+            db.commit()
+        except Exception:
+            db.rollback()
+        finally:
+            db.close()
+    except Exception:
+        pass
     return count

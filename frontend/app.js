@@ -165,6 +165,8 @@ window.startAutoGenerate = async function() {
     btn.innerHTML = `<span class="status-indicator-spinner" style="width:18px;height:18px;border-width:2px;"></span> Generating...`;
   }
 
+  window.isGeneratingShorts = true;
+
   const monitorCard = document.getElementById('pipelineMonitorCard');
   if (monitorCard) {
     monitorCard.style.display = 'block';
@@ -183,6 +185,7 @@ window.startAutoGenerate = async function() {
 
   resetSteppers('step-download');
   showToast('Started generating shorts!', 'info');
+  showGlobalLoader('Initializing 9:16 Video Pipeline...', 'Connecting to YouTube downloader, AI diarization, and face-tracking models.');
 
   const deviceId = (typeof getDeviceId === 'function' ? getDeviceId() : localStorage.getItem('ps_device_id') || '');
   const payload = { url: url, num_shorts: 'all', clear_existing: true, device_id: deviceId };
@@ -201,13 +204,17 @@ window.startAutoGenerate = async function() {
     });
 
     const data = await res.json().catch(() => ({}));
+    hideGlobalLoader();
+
     if (res.status === 401) {
+      window.isGeneratingShorts = false;
       showToast(data.detail || 'Please login to generate', 'error');
       setTimeout(() => window.location.href = 'login.html', 800);
       resetGenerateBtn();
       return;
     }
     if (res.status === 403) {
+      window.isGeneratingShorts = false;
       showToast(data.detail || 'Trial limit reached on this device', 'error');
       resetGenerateBtn();
       return;
@@ -217,20 +224,31 @@ window.startAutoGenerate = async function() {
     if (data.success) {
       pollPipelineProgress();
     } else {
+      window.isGeneratingShorts = false;
       showToast(`Pipeline: ${data.message || 'Error'}`, 'error');
       resetGenerateBtn();
     }
   } catch (err) {
+    window.isGeneratingShorts = false;
+    hideGlobalLoader();
     showToast(err.message || `Cannot reach backend at ${targetBase}`, 'error');
     resetGenerateBtn();
   }
 };
 
-function resetGenerateBtn() {
+function resetGenerateBtn(failed = false) {
   const btn = document.getElementById('autoGenerateBtn');
   if (btn) {
     btn.disabled = false;
-    btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Generate Shorts`;
+    if (failed) {
+      btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Retry Pipeline`;
+      btn.style.borderColor = 'var(--red)';
+      btn.style.color = 'var(--red)';
+    } else {
+      btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Generate Shorts`;
+      btn.style.borderColor = '';
+      btn.style.color = '';
+    }
   }
 }
 
@@ -253,7 +271,7 @@ function updateStepperPhases(phase) {
 
 function resetSteppers(activeStepId = 'step-download') {
   const steps = document.querySelectorAll('.stepper-step');
-  steps.forEach(s => s.classList.remove('active', 'completed'));
+  steps.forEach(s => s.classList.remove('active', 'completed', 'error'));
   const first = document.getElementById(activeStepId);
   if (first) first.classList.add('active');
 }
@@ -356,7 +374,10 @@ function pollPipelineProgress() {
       logBox.scrollTop = logBox.scrollHeight;
     }
 
-    if (p.status === 'completed') {
+    if (p.status === 'running') {
+      window.isGeneratingShorts = true;
+    } else if (p.status === 'completed') {
+      window.isGeneratingShorts = false;
       if (progressBar) progressBar.style.width = '100%';
       if (percentText) percentText.textContent = '100%';
       if (spinner) spinner.style.display = 'none';
@@ -376,15 +397,150 @@ function pollPipelineProgress() {
         if (gallery) gallery.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }, 1500);
     } else if (p.status === 'error') {
+      window.isGeneratingShorts = false;
       if (spinner) spinner.style.display = 'none';
-      if (title) title.textContent = '❌ Generation Failed';
-      if (subtitle) subtitle.textContent = p.error || 'An error occurred during pipeline execution. Check logs below.';
+      const failedPhase = p.current_phase || 'unknown';
+      const phaseNames = { download: 'Video Download', transcribe: 'Transcription', select: 'Clip Selection', rank: 'Semantic Ranking', render: 'Rendering' };
+      const failedName = phaseNames[failedPhase] || failedPhase;
+      if (title) title.textContent = '❌ Failed at: ' + failedName;
+      if (subtitle) subtitle.textContent = (p.error || 'An error occurred during pipeline execution.') + '\nFix the issue and retry.';
       if (progressBar) progressBar.style.background = 'var(--red)';
-      showToast('Pipeline error: ' + (p.error || 'Unknown error'), 'error');
-      resetGenerateBtn();
+
+      // Mark failed step red, keep completed ones green
+      const phaseOrder = ['download', 'transcribe', 'select', 'rank', 'render'];
+      const failIdx = phaseOrder.indexOf(failedPhase);
+      phaseOrder.forEach((ph, idx) => {
+        const el = document.getElementById('step-' + ph);
+        if (!el) return;
+        el.classList.remove('active');
+        if (idx < failIdx) el.classList.add('completed');
+        else if (idx === failIdx) { el.classList.add('error'); }
+      });
+
+      showToast('Pipeline failed at: ' + failedName + ' — ' + (p.error || ''), 'error');
+      resetGenerateBtn(true);
     }
   }
 }
+
+/* ─── Active Generation Navigation Guard ──────────────────────────────────── */
+window.isGeneratingShorts = false;
+
+window.addEventListener('beforeunload', (e) => {
+  if (window.isGeneratingShorts) {
+    e.preventDefault();
+    e.returnValue = '';
+    return '';
+  }
+});
+
+window.addEventListener('pagehide', () => {
+  if (window.isGeneratingShorts) {
+    try {
+      const token = typeof getAuthToken === 'function' ? getAuthToken() : '';
+      const blob = new Blob([], { type: 'application/json' });
+      navigator.sendBeacon(`${API_BASE}/api/pipeline/cancel` + (token ? `?token=${encodeURIComponent(token)}` : ''), blob);
+    } catch {}
+  }
+});
+
+document.addEventListener('click', (e) => {
+  const link = e.target.closest('a[href]');
+  if (link && window.isGeneratingShorts) {
+    const href = link.getAttribute('href');
+    if (href && !href.startsWith('#') && !href.startsWith('javascript:')) {
+      e.preventDefault();
+      showConfirmModal({
+        title: '⚠️ Generation In Progress',
+        message: 'A viral short is actively being generated. If you leave now, the pipeline will be TERMINATED and all progress will be lost.\n\nAre you sure you want to leave?',
+        icon: '⚠️',
+        confirmText: 'Yes, Stop & Leave',
+        cancelText: 'Stay & Continue',
+        confirmType: 'danger',
+        onConfirm: async () => {
+          window.isGeneratingShorts = false;
+          try {
+            const token = typeof getAuthToken === 'function' ? getAuthToken() : '';
+            await fetch(`${API_BASE}/api/pipeline/cancel`, {
+              method: 'POST',
+              headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+            });
+          } catch {}
+          window.location.href = href;
+        }
+      });
+    }
+  }
+});
+
+// Intercept browser refresh (F5 / Ctrl+R) with custom modal
+document.addEventListener('keydown', (e) => {
+  if (window.isGeneratingShorts && (e.key === 'F5' || (e.ctrlKey && e.key === 'r'))) {
+    e.preventDefault();
+    showConfirmModal({
+      title: '⚠️ Generation In Progress',
+      message: 'Refreshing the page will TERMINATE the running pipeline. All progress will be lost.\n\nRefresh anyway?',
+      icon: '⚠️',
+      confirmText: 'Yes, Refresh & Stop',
+      cancelText: 'Stay & Continue',
+      confirmType: 'danger',
+      onConfirm: async () => {
+        window.isGeneratingShorts = false;
+        try {
+          const token = typeof getAuthToken === 'function' ? getAuthToken() : '';
+          await fetch(`${API_BASE}/api/pipeline/cancel`, {
+            method: 'POST',
+            headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+          });
+        } catch {}
+        window.location.reload();
+      }
+    });
+  }
+});
+
+/* ─── In-App Password Change Modal Helper ─────────────────────────────────── */
+window.openChangePasswordModal = function() {
+  let modal = document.getElementById('changePasswordModal');
+  if (modal) modal.style.display = 'flex';
+};
+
+window.closeChangePasswordModal = function(e) {
+  if (e && e.target && e.target.id !== 'changePasswordModal' && !e.target.classList.contains('modal-close-btn')) return;
+  const modal = document.getElementById('changePasswordModal');
+  if (modal) modal.style.display = 'none';
+};
+
+window.submitChangePassword = async function() {
+  const old_password = document.getElementById('cp_old_password')?.value;
+  const new_password = document.getElementById('cp_new_password')?.value;
+  const confirm_password = document.getElementById('cp_confirm_password')?.value;
+
+  if (!old_password) return showToast('Please enter your current password.', 'warning');
+  if (!new_password || new_password.length < 8) return showToast('New password must be at least 8 characters long.', 'warning');
+  if (new_password !== confirm_password) return showToast('New passwords do not match. Please re-enter.', 'warning');
+
+  showGlobalLoader('Updating Password...', 'Encrypting new credentials.');
+  try {
+    const r = await fetch(`${API_BASE}/api/auth/change-password`, {
+      method: 'POST',
+      headers: (typeof authHeaders === 'function' ? authHeaders() : { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ old_password, new_password })
+    });
+    const j = await r.json();
+    hideGlobalLoader();
+    if (!r.ok) throw new Error(j.detail || 'Failed to change password');
+
+    showToast('Password changed successfully!', 'success');
+    window.closeChangePasswordModal();
+    if (document.getElementById('cp_old_password')) document.getElementById('cp_old_password').value = '';
+    if (document.getElementById('cp_new_password')) document.getElementById('cp_new_password').value = '';
+    if (document.getElementById('cp_confirm_password')) document.getElementById('cp_confirm_password').value = '';
+  } catch (err) {
+    hideGlobalLoader();
+    showToast(err.message || 'Failed to change password', 'error');
+  }
+};
 
 /* ─── Gallery Refresh & Rendering ────────────────────────────────────────── */
 window.refreshOutputs = async function() {
@@ -647,7 +803,7 @@ function showScriptModal(scriptText, topicTitle) {
         </div>
         <div style="padding:1.5rem; flex:1; overflow-y:auto;">
           <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:0.75rem;">Here is your structured, retention-optimized short script ready for voiceover or automated generation:</p>
-          <pre id="scriptModalContent" style="white-space:pre-wrap; background:#07090f; padding:1.2rem; border-radius:10px; font-family:'Inter',sans-serif; font-size:0.92rem; line-height:1.6; color:#e2e8f0; border:1px solid var(--border-medium);"></pre>
+          <pre id="scriptModalContent" style="white-space:pre-wrap; background:#07090f; padding:1.2rem; border-radius:10px; font-family:var(--font-body); font-size:0.92rem; line-height:1.6; color:#e2e8f0; border:1px solid var(--border-medium);"></pre>
         </div>
         <div class="video-modal-footer" style="justify-content:flex-end;">
           <button class="btn-primary btn-sm" onclick="copyScriptText()" style="min-width:180px;">📋 Copy Full Script</button>

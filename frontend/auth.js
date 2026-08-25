@@ -136,18 +136,14 @@ window.showBackendOfflineOverlay = function() {
     overlay.className = 'video-modal-backdrop';
     overlay.style.cssText = 'display:flex; z-index:999999; background:rgba(4,6,12,0.92); backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px);';
     overlay.innerHTML = `
-      <div class="video-modal-content" style="max-width:480px; text-align:center; padding:2.2rem; border-color:rgba(239,68,68,0.4); box-shadow:0 0 40px rgba(239,68,68,0.2);">
-        <div style="font-size:3rem; margin-bottom:0.75rem; filter:drop-shadow(0 0 15px rgba(239,68,68,0.5));">⚠️</div>
-        <h2 style="font-size:1.4rem; font-weight:800; color:#fff; margin-bottom:0.5rem;">Backend Server is Offline</h2>
-        <p style="font-size:0.9rem; color:var(--text-muted); line-height:1.6; margin-bottom:1.5rem;">
-          The Vergeclip Python backend server is currently stopped. To use the application, please start the backend by running this command in your terminal:
+      <div class="video-modal-content" style="max-width:440px; text-align:center; padding:2.2rem; border-color:rgba(168,85,247,0.35); box-shadow:0 0 45px rgba(168,85,247,0.25);">
+        <div style="font-size:2.8rem; margin-bottom:0.75rem; filter:drop-shadow(0 0 16px var(--purple-glow));">⚡</div>
+        <h2 style="font-size:1.35rem; font-weight:800; color:#fff; margin-bottom:0.4rem;">Backend Server Disconnected</h2>
+        <p style="font-size:0.9rem; color:var(--text-muted); line-height:1.5; margin-bottom:1.5rem;">
+          Vergeclip API service is currently offline. Please ensure the backend server is running to continue.
         </p>
-        <div style="background:#07090f; border:1px solid rgba(255,255,255,0.1); padding:0.75rem 1rem; border-radius:8px; font-family:monospace; font-size:0.95rem; color:#38bdf8; margin-bottom:1.5rem; text-align:left; display:flex; justify-content:space-between; align-items:center;">
-          <span>python server.py</span>
-          <span style="font-size:0.75rem; color:var(--text-faint);">Port 5000</span>
-        </div>
         <button class="btn-primary" onclick="window.pingBackendServer(true)" style="width:100%; justify-content:center;">
-          ↻ Check & Reconnect
+          ↻ Reconnect Now
         </button>
       </div>
     `;
@@ -258,22 +254,34 @@ function ensureLoaderDOM() {
     loader.className = 'global-loader-backdrop';
     loader.innerHTML = `
       <div class="global-loader-card">
-        <div class="loader-visual-wrap">
-          <div class="loader-ring-glow"></div>
+        <div class="loader-3d-stage">
           <div class="loader-cube-wrap">
             <div class="loader-cube">
               <div class="cube-face cube-front"></div>
               <div class="cube-face cube-back"></div>
-              <div class="cube-face cube-left"></div>
               <div class="cube-face cube-right"></div>
+              <div class="cube-face cube-left"></div>
               <div class="cube-face cube-top"></div>
               <div class="cube-face cube-bottom"></div>
             </div>
           </div>
+          <div class="orb-core"></div>
+          <div class="orbital-ring orbital-ring-1"></div>
+          <div class="orbital-ring orbital-ring-2"></div>
+          <div class="orbital-ring orbital-ring-3"></div>
         </div>
-        <div class="loader-text-area">
-          <h3 id="globalLoaderTitle" class="loader-title">Generating Viral Short...</h3>
-          <p id="globalLoaderSub" class="loader-sub">Analyzing speech hooks, face-tracking 9:16 framing & rendering kinetic captions.</p>
+        <div class="loader-spectrum-wrap">
+          <div class="spectrum-bar"></div>
+          <div class="spectrum-bar"></div>
+          <div class="spectrum-bar"></div>
+          <div class="spectrum-bar"></div>
+          <div class="spectrum-bar"></div>
+          <div class="spectrum-bar"></div>
+          <div class="spectrum-bar"></div>
+        </div>
+        <div class="loader-cinematic-text-wrap">
+          <h3 id="globalLoaderTitle" class="loader-main-title">Processing AI Action...</h3>
+          <p id="globalLoaderSub" class="loader-subtitle">Executing real-time neural pipeline and optimizing media assets.</p>
         </div>
         <div class="loader-progress-track">
           <div class="loader-progress-fill"></div>
@@ -456,7 +464,7 @@ function ensureConfirmModalDOM() {
     modal.innerHTML = `
       <div class="video-modal-content global-confirm-card" style="max-width:440px; padding:2rem; text-align:center; border-radius:var(--radius-lg);" onclick="event.stopPropagation()">
         <div id="confirmModalIcon" style="font-size:2.6rem; margin-bottom:1rem; filter:drop-shadow(0 0 16px var(--purple-glow));">⚠️</div>
-        <h3 id="confirmModalTitle" style="font-family:'Outfit',sans-serif; font-size:1.35rem; font-weight:800; color:#fff; margin-bottom:0.6rem;">Confirm Action</h3>
+        <h3 id="confirmModalTitle" style="font-family:var(--font-heading); font-size:1.35rem; font-weight:800; color:#fff; margin-bottom:0.6rem;">Confirm Action</h3>
         <p id="confirmModalMsg" style="font-size:0.92rem; color:var(--text-muted); line-height:1.5; margin-bottom:1.75rem;">Are you sure you want to proceed?</p>
         <div style="display:flex; justify-content:center; gap:0.85rem;">
           <button id="confirmCancelBtn" class="btn-outline btn-sm" style="min-width:110px;">Cancel</button>

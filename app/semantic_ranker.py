@@ -38,16 +38,13 @@ from src.config import (
     OLLAMA_TIMEOUT,
     OPENAI_API_KEY,
     RANKING_PROVIDER,
-    SEMANTIC_DEFAULT_POOL_SIZE,
-    SEMANTIC_DEFAULT_SEPARATION,
-    SEMANTIC_DEFAULT_TOP_N,
     SEMANTIC_JSON_FILENAME,
-    SEMANTIC_MIN_SCORE,
-    SEMANTIC_REFINE_MAX_DURATION,
-    SEMANTIC_REFINE_MIN_DURATION,
     SEMANTIC_TXT_FILENAME,
     TEMP_DIR,
     TRANSCRIPT_JSON_FILENAME,
+    get_clip_selection_config,
+    get_semantic_ranking_config,
+    get_setting,
 )
 from src.logger import get_logger
 
@@ -249,7 +246,10 @@ def _call_openai_compatible(
     key = api_key or os.environ.get("CUSTOM_AI_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
     target_model = model or os.environ.get("CUSTOM_AI_MODEL") or "gpt-4o-mini"
     
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Vergeclip/1.0 (OpenAI-Compatible Client)",
+    }
     if key:
         headers["Authorization"] = f"Bearer {key}"
 
@@ -258,12 +258,14 @@ def _call_openai_compatible(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
 
-    payload = json.dumps({
+    payload_dict = {
         "model": target_model,
         "messages": messages,
         "temperature": 0.1,
-        "response_format": {"type": "json_object"}
-    }).encode("utf-8")
+        "response_format": {"type": "json_object"},
+    }
+
+    payload = json.dumps(payload_dict).encode("utf-8")
 
     req = urllib.request.Request(endpoint, data=payload, headers=headers)
     try:
@@ -271,7 +273,16 @@ def _call_openai_compatible(
             body = json.loads(resp.read().decode("utf-8"))
             return body["choices"][0]["message"]["content"].strip()
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"Custom AI endpoint error ({exc.code}): {exc.read().decode('utf-8')}") from exc
+        err_body = exc.read().decode("utf-8", errors="replace")
+        # Some providers (Groq) reject response_format — retry without it
+        if exc.code in (400, 422) and "response_format" in err_body.lower():
+            payload_dict.pop("response_format", None)
+            payload2 = json.dumps(payload_dict).encode("utf-8")
+            req2 = urllib.request.Request(endpoint, data=payload2, headers=headers)
+            with urllib.request.urlopen(req2, timeout=45) as resp2:
+                body2 = json.loads(resp2.read().decode("utf-8"))
+                return body2["choices"][0]["message"]["content"].strip()
+        raise RuntimeError(f"Custom AI endpoint error ({exc.code}): {err_body}") from exc
 
 
 def _call_llm(
@@ -307,7 +318,7 @@ def _call_llm(
             system_prompt=system_prompt,
         )
     else:  # default: gemini
-        target_model = model if (model and "gemini" in model) else "gemini-2.5-flash"
+        target_model = model if (model and "gemini" in model) else os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
         return _call_gemini(prompt, system_prompt=system_prompt, model=target_model)
 
 
@@ -412,18 +423,18 @@ _RE_SENTENCE_END = re.compile(r"[.!?]['\"]?\s*$")
 def refine_candidate_boundaries(
     candidate: dict,
     segments: list[dict],
-    min_dur: float = SEMANTIC_REFINE_MIN_DURATION,
-    max_dur: float = SEMANTIC_REFINE_MAX_DURATION,
+    min_dur: float = None,
+    max_dur: float = None,
 ) -> dict:
     """
     Inspect surrounding transcript and adjust start/end timestamps to nearby
     sentence boundaries strictly adhering to [min_dur, max_dur] (e.g. 15.0s - 20.0s).
-
-    1. If a clip starts with a short fragment or connector ('Why?', 'How?', 'Well', 'So'),
-       attempts to shift the start backward to include the setup question only if duration <= max_dur.
-    2. If duration exceeds max_dur, trims backward to the best sentence boundary within [min_dur, max_dur].
-    3. Never reduces duration below min_dur.
     """
+    _cfg = get_clip_selection_config()
+    if min_dur is None:
+        min_dur = _cfg["clip_min_duration"]
+    if max_dur is None:
+        max_dur = _cfg["clip_max_duration"]
     c_start = float(candidate.get("start", 0.0))
     c_end = float(candidate.get("end", 0.0))
 
@@ -554,7 +565,7 @@ def _extract_surrounding_context(
 # Candidate LLM Evaluation
 # ─────────────────────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are an elite short-form video editor evaluating candidate clips (15-25 seconds) from a long-form podcast for YouTube Shorts, Instagram Reels, and TikTok.
+_DEFAULT_SYSTEM_PROMPT = """You are an elite short-form video editor evaluating candidate clips (15-25 seconds) from a long-form podcast for YouTube Shorts, Instagram Reels, and TikTok.
 
 EVALUATION GOAL:
 Determine if this clip will perform exceptionally well as a standalone viral short. The final clip must be understandable and compelling on its own without requiring the viewer to have seen the previous conversation.
@@ -593,6 +604,12 @@ You must respond ONLY with a strict JSON object:
 }"""
 
 
+def _get_system_prompt() -> str:
+    """Return the active SYSTEM_PROMPT from DB, falling back to hardcoded default."""
+    val = get_setting("pipeline_system_prompt", None)
+    return val if val else _DEFAULT_SYSTEM_PROMPT
+
+
 def _evaluate_single_candidate(
     candidate_text: str,
     pre_context: str,
@@ -620,7 +637,7 @@ Analyze the CANDIDATE CLIP and provide your ratings in strict JSON format."""
             prompt=prompt,
             model=model,
             base_url=base_url,
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=_get_system_prompt(),
         )
         parsed = _extract_json_response(raw_resp)
     except Exception as exc:
@@ -639,7 +656,7 @@ Analyze the CANDIDATE CLIP and provide your ratings in strict JSON format."""
                 prompt=retry_prompt,
                 model=model,
                 base_url=base_url,
-                system_prompt=SYSTEM_PROMPT,
+                system_prompt=_get_system_prompt(),
             )
             parsed = _extract_json_response(raw_resp)
         except Exception:
@@ -828,10 +845,10 @@ def run_semantic_ranking(
     *,
     model: str = OLLAMA_DEFAULT_MODEL,
     base_url: str = OLLAMA_BASE_URL,
-    semantic_pool_size: int = SEMANTIC_DEFAULT_POOL_SIZE,
-    top_n: int = SEMANTIC_DEFAULT_TOP_N,
-    min_score: float = SEMANTIC_MIN_SCORE,
-    min_separation: float = SEMANTIC_DEFAULT_SEPARATION,
+    semantic_pool_size: int = None,
+    top_n: int = None,
+    min_score: float = None,
+    min_separation: float = None,
     json_out: Optional[Path] = None,
     txt_out: Optional[Path] = None,
 ) -> dict:
@@ -845,6 +862,15 @@ def run_semantic_ranking(
     5. Applies diversity timeline distribution.
     6. Saves semantic_candidates.json & semantic_candidates.txt.
     """
+    _cfg = get_semantic_ranking_config()
+    if semantic_pool_size is None:
+        semantic_pool_size = _cfg["semantic_default_pool_size"]
+    if top_n is None:
+        top_n = _cfg["semantic_default_top_n"]
+    if min_score is None:
+        min_score = _cfg["semantic_min_score"]
+    if min_separation is None:
+        min_separation = _cfg["semantic_default_separation"]
     # 1. Resolve paths
     cand_path = candidates_path or (TEMP_DIR / CANDIDATE_POOL_JSON_FILENAME)
     if not cand_path.exists():
@@ -879,9 +905,10 @@ def run_semantic_ranking(
     log.info("Loaded candidate pool of %d candidates from %s", total_pool_count, cand_path.name)
 
     # 2. Boundary Refinement Stage
+    _clip_cfg = get_clip_selection_config()
     print(f"\n  [1/3] Applying sentence-boundary refinement (target 15-25s) …")
     refined_candidates = [
-        refine_candidate_boundaries(c, segments, SEMANTIC_REFINE_MIN_DURATION, SEMANTIC_REFINE_MAX_DURATION)
+        refine_candidate_boundaries(c, segments, _clip_cfg["clip_min_duration"], _clip_cfg["clip_max_duration"])
         for c in raw_candidates
     ]
 

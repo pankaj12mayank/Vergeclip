@@ -102,6 +102,7 @@ function switchTab(name) {
     prompts: '🧠 Prompts & Pipelines',
     users: '👥 User Accounts Management',
     jobs: '🎬 Pipeline Job Queue',
+    pipeline: '🔧 Pipeline Settings',
     quota: '📊 Quota & System Limits',
     audit: '📝 Live System & User Audit Stream'
   };
@@ -127,13 +128,16 @@ function switchTab(name) {
   if (name === 'prompts') loadPrompts();
   if (name === 'users') loadUsers();
   if (name === 'jobs') loadJobs();
+  if (name === 'pipeline') loadPipelineConfig();
   if (name === 'quota') loadQuota();
   if (name === 'audit') {
     loadAudit();
+    loadSystemHealth(false);
     if (!auditLivePoll) {
       auditLivePoll = setInterval(() => {
         if (document.getElementById('panel-audit')?.classList.contains('active')) {
           loadAudit(false);
+          loadSystemHealth(false);
         }
       }, 3500);
     }
@@ -149,7 +153,8 @@ async function loadAll() {
       loadUsers(false),
       loadJobs(false),
       loadAudit(false),
-      loadQuota(false)
+      loadQuota(false),
+      loadPipelineConfig(),
     ]);
     hideGlobalLoader();
     showToast('All administrative data refreshed successfully.', 'success');
@@ -159,70 +164,182 @@ async function loadAll() {
   }
 }
 
-/* ─── Custom OpenAI-Compatible AI Provider ───────────────────────────────── */
-async function testCustomAI() {
-  const base_url = document.getElementById('custom_ai_base_url')?.value.trim();
-  const api_key = document.getElementById('custom_ai_api_key')?.value.trim();
-  const model_name = document.getElementById('custom_ai_model')?.value.trim();
+/* ─── Custom OpenAI-Compatible AI Provider Modal Handlers ───────────────── */
 
-  if (!base_url || !model_name) {
-    return showToast('Please enter both Base URL and Model identifier to test.', 'warning');
+function openAddProviderModal() {
+  const modal = document.getElementById('addProviderModal');
+  if (modal) modal.style.display = 'flex';
+  const out = document.getElementById('modal_provider_test_out');
+  if (out) out.style.display = 'none';
+}
+
+function closeAddProviderModal(e) {
+  if (e && e.target && e.target.id !== 'addProviderModal' && !e.target.classList.contains('modal-close-btn')) return;
+  const modal = document.getElementById('addProviderModal');
+  if (modal) modal.style.display = 'none';
+}
+
+async function fetchModelsForModal() {
+  const base_url = document.getElementById('modal_provider_base_url')?.value.trim();
+  const api_key = document.getElementById('modal_provider_api_key')?.value.trim();
+  const sel = document.getElementById('modal_provider_model_select');
+  const selBox = document.getElementById('modalModelList');
+  const btn = document.getElementById('modalFetchBtn');
+  const modelInput = document.getElementById('modal_provider_model');
+
+  if (!base_url) return showToast('Enter Base URL first.', 'warning');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Fetching...'; }
+
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/custom-providers/fetch-models`, {
+      method: 'POST', headers: hdr(),
+      body: JSON.stringify({ base_url, api_key })
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || 'Failed to fetch models');
+
+    if (sel && selBox) {
+      sel.innerHTML = '<option value="">-- Select a model --</option>';
+      if (!j.models || j.models.length === 0) {
+        sel.innerHTML = '<option value="">No models found at this endpoint</option>';
+        showToast('No models returned from provider.', 'warning');
+      } else {
+        j.models.forEach(m => {
+          const opt = document.createElement('option');
+          opt.value = m.id;
+          opt.textContent = m.free ? `🆓 ${m.id}  (FREE)` : `  ${m.id}`;
+          sel.appendChild(opt);
+        });
+        showToast(`Found ${j.count} models! Select one below.`, 'success');
+      }
+      selBox.style.display = 'block';
+      if (modelInput) { modelInput.value = ''; modelInput.placeholder = 'Select from dropdown below ↓'; }
+    }
+  } catch (e) {
+    showToast('Fetch failed: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔍 Fetch Models'; }
   }
+}
 
-  const out = document.getElementById('custom_ai_test_output');
+function onModelSelected(modelId) {
+  const modelInput = document.getElementById('modal_provider_model');
+  if (modelInput) modelInput.value = modelId;
+}
+
+async function testModalProvider() {
+  const base_url = document.getElementById('modal_provider_base_url')?.value.trim();
+  const api_key = document.getElementById('modal_provider_api_key')?.value.trim();
+  const model_name = document.getElementById('modal_provider_model')?.value.trim();
+  const out = document.getElementById('modal_provider_test_out');
+
+  if (!base_url || !model_name) return showToast('Enter Base URL and Model first.', 'warning');
+
   if (out) {
     out.style.display = 'block';
-    out.innerHTML = `<span style="color:var(--cyan);">Connecting to ${escapeHtml(model_name)} at ${escapeHtml(base_url)}...</span>`;
+    out.innerHTML = `<span style="color:var(--cyan);">Testing connection to ${escapeHtml(model_name)}...</span>`;
   }
 
-  showGlobalLoader('Testing AI Connection...', `Sending JSON test prompt to ${model_name}.`);
+  showGlobalLoader('Testing AI Connection...', `Connecting to ${model_name}.`);
   try {
     const r = await fetch(`${API_BASE}/api/admin/ai/test`, {
-      method: 'POST',
-      headers: hdr(),
+      method: 'POST', headers: hdr(),
       body: JSON.stringify({ base_url, api_key, model_name })
     });
     const j = await r.json();
     hideGlobalLoader();
-
     if (!r.ok) throw new Error(j.detail || 'Connection failed');
     if (out) {
-      out.innerHTML = `
-        <div style="color:#34d399; font-weight:700; margin-bottom:0.4rem;">${escapeHtml(j.message)}</div>
-        <pre style="color:var(--text-muted); font-size:0.8rem; white-space:pre-wrap;">${escapeHtml(j.response)}</pre>
-      `;
+      out.innerHTML = `<div style="color:#34d399; font-weight:700; margin-bottom:0.3rem;">✓ ${escapeHtml(j.message)}</div><pre style="color:var(--text-muted); font-size:0.75rem; white-space:pre-wrap;">${escapeHtml(j.response)}</pre>`;
     }
-    showToast(`Connected to ${model_name} in ${j.latency_ms}ms!`, 'success');
+    showToast(`Connected in ${j.latency_ms}ms!`, 'success');
   } catch (e) {
     hideGlobalLoader();
-    if (out) {
-      out.innerHTML = `<span style="color:#f87171; font-weight:600;">Error: ${escapeHtml(e.message)}</span>`;
-    }
-    showToast('AI Connection Error: ' + e.message, 'error');
+    if (out) out.innerHTML = `<span style="color:#f87171; font-weight:600;">Error: ${escapeHtml(e.message)}</span>`;
+    showToast('Connection Error: ' + e.message, 'error');
   }
 }
 
-async function saveCustomAI() {
-  const provider = document.getElementById('ai_provider_select')?.value || 'custom_openai';
-  const base_url = document.getElementById('custom_ai_base_url')?.value.trim();
-  const api_key = document.getElementById('custom_ai_api_key')?.value.trim();
-  const model_name = document.getElementById('custom_ai_model')?.value.trim();
+async function submitAddProvider() {
+  const name = document.getElementById('modal_provider_name')?.value.trim();
+  const base_url = document.getElementById('modal_provider_base_url')?.value.trim();
+  const api_key = document.getElementById('modal_provider_api_key')?.value.trim();
+  const model = document.getElementById('modal_provider_model')?.value.trim();
+  const modelList = document.getElementById('modalModelList');
 
-  showGlobalLoader('Saving Primary AI Engine...', 'Configuring global ranking and script generation pipelines.');
+  if (!name) return showToast('Enter a Provider Name.', 'warning');
+  if (!base_url) return showToast('Enter Base URL.', 'warning');
+  if (!modelList || modelList.style.display === 'none' || !model) {
+    return showToast('Click "Fetch Models" and select a model first.', 'warning');
+  }
+
+  showGlobalLoader('Adding Provider...', 'Saving provider configuration.');
   try {
-    const r = await fetch(`${API_BASE}/api/admin/ai/save`, {
-      method: 'POST',
-      headers: hdr(),
-      body: JSON.stringify({ provider, base_url, api_key, model_name })
+    const r = await fetch(`${API_BASE}/api/admin/custom-providers`, {
+      method: 'POST', headers: hdr(),
+      body: JSON.stringify({ name, base_url, api_key, model, is_active: true })
     });
     const j = await r.json();
     hideGlobalLoader();
-    if (!r.ok) throw new Error(j.detail || 'Failed to save AI config');
-    showToast(j.message, 'success');
+    if (!r.ok) throw new Error(j.detail || 'Failed');
+    showToast(`Provider "${name}" added and activated!`, 'success');
+    closeAddProviderModal();
     loadConfig(false);
   } catch (e) {
     hideGlobalLoader();
-    showToast('Failed to save AI config: ' + e.message, 'error');
+    showToast('Add failed: ' + e.message, 'error');
+  }
+}
+
+async function testCustomProviderCard(id, base_url) {
+  const model = document.getElementById(`cp_model_${id}`)?.value.trim();
+  const api_key = document.getElementById(`cp_key_${id}`)?.value.trim();
+  if (!model) return showToast('Model identifier cannot be empty.', 'warning');
+
+  showGlobalLoader('Verifying Connection...', `Testing connection with ${model}.`);
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/ai/test`, {
+      method: 'POST', headers: hdr(),
+      body: JSON.stringify({ base_url, api_key: api_key || '', model_name: model, provider_id: id })
+    });
+    const j = await r.json();
+    hideGlobalLoader();
+    if (!r.ok) throw new Error(j.detail || 'Verification failed');
+    
+    const badge = document.getElementById(`badge_cp_${id}`);
+    if (badge) {
+      badge.className = 'badge badge-green';
+      badge.textContent = '● CONFIGURED';
+    }
+    showToast(`Connection Verified in ${j.latency_ms}ms!`, 'success');
+  } catch (e) {
+    hideGlobalLoader();
+    showToast('Verification failed: ' + e.message, 'error');
+  }
+}
+
+async function saveCustomProviderCard(id, name, base_url) {
+  const model = document.getElementById(`cp_model_${id}`)?.value.trim();
+  const api_key = document.getElementById(`cp_key_${id}`)?.value.trim();
+  if (!model) return showToast('Model identifier cannot be empty.', 'warning');
+
+  showGlobalLoader('Saving Provider...', `Updating ${name} configuration.`);
+  try {
+    const payload = { id, name, base_url, model, is_active: true };
+    if (api_key) payload.api_key = api_key;
+
+    const r = await fetch(`${API_BASE}/api/admin/custom-providers`, {
+      method: 'POST', headers: hdr(),
+      body: JSON.stringify(payload)
+    });
+    const j = await r.json();
+    hideGlobalLoader();
+    if (!r.ok) throw new Error(j.detail || 'Failed');
+    showToast(`Saved ${name} successfully!`, 'success');
+    loadConfig(false);
+  } catch (e) {
+    hideGlobalLoader();
+    showToast('Save failed: ' + e.message, 'error');
   }
 }
 
@@ -237,12 +354,11 @@ async function loadConfig(showLoad = true) {
     if (!keysDiv) return;
     keysDiv.innerHTML = '';
 
-    const keys = ['VIDEOSAILOR_API_KEY', 'ASSEMBLYAI_API_KEY', 'GOOGLE_API_KEY', 'OPENAI_API_KEY'];
+    const keys = ['VIDEOSAILOR_API_KEY', 'ASSEMBLYAI_API_KEY', 'GROQ_API_KEY'];
     const keyInfo = {
-      VIDEOSAILOR_API_KEY: { title: '🎙️ VideoSailor Engine', desc: 'Powers ultra-fast high-res YouTube video downloading and media stream extraction.' },
-      ASSEMBLYAI_API_KEY: { title: '💬 AssemblyAI Speech Engine', desc: 'Provides word-level timestamps and multi-speaker diarization.' },
-      GOOGLE_API_KEY: { title: '🧠 Google Gemini AI', desc: 'Drives viral hook scoring, retention analysis, and automatic vertical reframing.' },
-      OPENAI_API_KEY: { title: '🤖 OpenAI API Engine', desc: 'Fallback and alternative LLM engine for transcript evaluation and metadata generation.' }
+      VIDEOSAILOR_API_KEY: { title: '🎙️ VideoSailor Engine (Optional)', desc: 'Cloud video downloader. Without this key, pipeline uses yt-dlp (FREE, local). Only add if you have a paid VideoSailor subscription.' },
+      ASSEMBLYAI_API_KEY: { title: '💬 AssemblyAI Speech Engine', desc: 'Cloud transcription with word-level timestamps and multi-speaker diarization ($0.15-$0.21/hr).' },
+      GROQ_API_KEY: { title: '🆓 Groq Whisper Engine (FREE)', desc: 'FREE transcription via Groq Whisper — 8 hrs audio/day, no card needed. Use alongside or instead of AssemblyAI.' }
     };
 
     let setKeysCount = 0;
@@ -253,6 +369,7 @@ async function loadConfig(showLoad = true) {
       const info = keyInfo[k] || { title: k, desc: 'API key for service integration.' };
       const card = document.createElement('div');
       card.className = 'core-key-card';
+
       card.innerHTML = `
         <div class="core-key-card-header">
           <div class="core-key-title">${info.title}</div>
@@ -270,6 +387,9 @@ async function loadConfig(showLoad = true) {
       `;
       keysDiv.appendChild(card);
     });
+
+    // Load custom AI providers from DB
+    loadCustomProviders(keysDiv, setKeysCount, keys.length);
 
     const kpiKeys = document.getElementById('kpi-keys');
     if (kpiKeys) kpiKeys.textContent = `${setKeysCount} / ${keys.length}`;
@@ -297,8 +417,16 @@ async function loadConfig(showLoad = true) {
           <button class="btn-primary btn-sm" style="margin-top:0.75rem; width:100%;" onclick="saveKey('STORAGE_PATH')">Save Path</button>
         </div>
       `;
+      // Populate current values from config
+      const limEl = document.getElementById('cfg_FREE_TIER_MONTHLY_LIMIT');
+      const durEl = document.getElementById('cfg_MAX_VIDEO_DURATION_MINUTES');
+      const storEl = document.getElementById('cfg_STORAGE_PATH');
+      if (limEl) limEl.value = j.config.free_tier_monthly_limit || '5';
+      if (durEl) durEl.value = j.config.max_video_duration_minutes || '90';
+      if (storEl) storEl.value = j.config.storage_path || './storage';
     }
 
+    loadSmtpSettings(false);
     const stat = document.getElementById('adminStatus');
     if (stat) stat.textContent = 'Configuration Synchronized ✓';
   } catch (e) {
@@ -361,6 +489,94 @@ async function saveKey(key) {
     hideGlobalLoader();
     showToast('Failed to save key: ' + e.message, 'error');
   }
+}
+
+/* ─── Custom AI Providers (from DB) ──────────────────────────────────────── */
+async function loadCustomProviders(container, standardCount, totalStandard) {
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/custom-providers`, { headers: hdr() });
+    if (!r.ok) return;
+    const j = await r.json();
+    const providers = j.providers || [];
+
+    const activeCount = standardCount + providers.filter(p => p.is_active).length;
+    const kpiKeys = document.getElementById('kpi-keys');
+    if (kpiKeys) kpiKeys.textContent = `${activeCount} / ${totalStandard + providers.length}`;
+
+    providers.forEach(p => {
+      const card = document.createElement('div');
+      card.className = 'core-key-card';
+      card.style.borderLeft = p.is_active ? '3px solid var(--green)' : '3px solid var(--border-subtle)';
+      card.innerHTML = `
+        <div class="core-key-card-header">
+          <div class="core-key-title">🤖 ${escapeHtml(p.name)}</div>
+          <span id="badge_cp_${p.id}" class="badge ${p.is_active ? 'badge-green' : 'badge-yellow'}">${p.is_active ? '● CONFIGURED' : '○ CONFIGURED'}</span>
+        </div>
+        <p class="core-key-desc">Drives viral hook scoring, retention analysis, and automatic vertical reframing.</p>
+        
+        <div style="margin-bottom:0.75rem;">
+          <label class="auth-label" style="margin-bottom:0.3rem;">Model</label>
+          <input id="cp_model_${p.id}" class="admin-input" value="${escapeHtml(p.model)}" placeholder="e.g. deepseek-chat" style="font-size:0.85rem;" />
+        </div>
+
+        <div style="position:relative; display:flex; align-items:center;">
+          <input class="admin-input" id="cp_key_${p.id}" type="password" placeholder="Enter key (leave empty to test configured)" style="padding-right:2.5rem;" />
+          <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('cp_key_${p.id}', this)" title="Show/Hide Key" style="right:10px;">👁️</button>
+        </div>
+
+        <div class="core-key-actions">
+          <button class="btn-outline btn-sm" onclick="testCustomProviderCard(${p.id}, '${escapeHtml(p.base_url)}')" title="Test Connection">⚡ Verify Connection</button>
+          ${p.is_active ? '' : `<button class="btn-outline btn-sm" onclick="activateProvider(${p.id})">✅ Set Active</button>`}
+          <button class="btn-primary btn-sm" onclick="saveCustomProviderCard(${p.id}, '${escapeHtml(p.name)}', '${escapeHtml(p.base_url)}')">💾 Save</button>
+          <button class="btn-outline btn-sm" onclick="deleteProvider(${p.id}, '${escapeHtml(p.name)}')" style="color:var(--red); border-color:var(--red);" title="Delete Provider">🗑️</button>
+        </div>
+      `;
+      container.appendChild(card);
+    });
+  } catch (e) {
+    console.warn('Failed to load custom providers:', e);
+  }
+}
+
+async function activateProvider(id) {
+  showGlobalLoader('Activating provider...', 'Switching active AI engine.');
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/custom-providers/${id}/activate`, {
+      method: 'POST', headers: hdr()
+    });
+    const j = await r.json();
+    hideGlobalLoader();
+    if (!r.ok) throw new Error(j.detail || 'Failed');
+    showToast(j.message, 'success');
+    loadConfig(false);
+  } catch (e) {
+    hideGlobalLoader();
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+async function deleteProvider(id, name) {
+  showConfirmModal({
+    title: 'Delete Custom Provider',
+    message: `Are you sure you want to delete "${name}"? This cannot be undone.`,
+    icon: '🗑️',
+    confirmText: 'Delete',
+    cancelText: 'Cancel',
+    confirmType: 'danger',
+    onConfirm: async () => {
+      try {
+        const r = await fetch(`${API_BASE}/api/admin/custom-providers/${id}`, {
+          method: 'DELETE', headers: hdr()
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.detail || 'Failed');
+        showToast(j.message, 'success');
+        loadConfig(false);
+      } catch (e) {
+        showToast('Delete failed: ' + e.message, 'error');
+      }
+    }
+  });
 }
 
 let rawPrompts = [];
@@ -679,45 +895,334 @@ async function submitCustomQuota() {
   }
 }
 
-/* ─── Jobs Queue Table ───────────────────────────────────────────────────── */
-async function loadJobs(showLoad = true) {
-  if (showLoad) showGlobalLoader('Loading Job Queue...', 'Fetching running and completed video tasks.');
+/* ─── SMTP Email Server Settings ─────────────────────────────────────────── */
+async function loadSmtpSettings(showLoad = false) {
+  if (showLoad) showGlobalLoader('Loading SMTP Settings...', 'Fetching email configuration.');
   try {
-    const r = await fetch(`${API_BASE}/api/admin/jobs`, { headers: hdr() });
+    const r = await fetch(`${API_BASE}/api/admin/smtp`, { headers: hdr() });
+    const j = await r.json();
+    if (j.success && j.smtp) {
+      const s = j.smtp;
+      if (document.getElementById('smtp_host')) document.getElementById('smtp_host').value = s.host || '';
+      if (document.getElementById('smtp_port')) document.getElementById('smtp_port').value = s.port || 587;
+      if (document.getElementById('smtp_username')) document.getElementById('smtp_username').value = s.username || '';
+      if (document.getElementById('smtp_password') && s.password) document.getElementById('smtp_password').value = s.password;
+      if (document.getElementById('smtp_sender_email')) document.getElementById('smtp_sender_email').value = s.sender_email || '';
+      if (document.getElementById('smtp_sender_name')) document.getElementById('smtp_sender_name').value = s.sender_name || 'Vergeclip AI Security';
+    }
+  } catch (e) {
+    // optional
+  } finally {
+    if (showLoad) hideGlobalLoader();
+  }
+}
+
+async function saveSmtpSettings() {
+  const host = document.getElementById('smtp_host')?.value.trim();
+  const port = parseInt(document.getElementById('smtp_port')?.value || '587', 10);
+  const username = document.getElementById('smtp_username')?.value.trim();
+  const password = document.getElementById('smtp_password')?.value;
+  const sender_email = document.getElementById('smtp_sender_email')?.value.trim();
+  const sender_name = document.getElementById('smtp_sender_name')?.value.trim();
+
+  if (!host || !sender_email) {
+    return showToast('Please enter both SMTP Host and Sender Email Address.', 'warning');
+  }
+
+  showGlobalLoader('Saving SMTP Settings...', 'Configuring email transmission service.');
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/smtp/save`, {
+      method: 'POST',
+      headers: hdr(),
+      body: JSON.stringify({ host, port, username, password, sender_email, sender_name, use_tls: true })
+    });
+    const j = await r.json();
+    hideGlobalLoader();
+    if (!r.ok) throw new Error(j.detail || 'Failed to save SMTP');
+    showToast(j.message || 'SMTP Settings saved successfully!', 'success');
+  } catch (e) {
+    hideGlobalLoader();
+    showToast('Failed to save SMTP: ' + e.message, 'error');
+  }
+}
+
+async function testSmtpConnection() {
+  const test_email = document.getElementById('smtp_test_email')?.value.trim();
+  if (!test_email || !test_email.includes('@')) {
+    return showToast('Please enter a valid destination email address to test.', 'warning');
+  }
+
+  showGlobalLoader('Sending Test Email...', `Dispatching SMTP test message to ${test_email}`);
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/smtp/test`, {
+      method: 'POST',
+      headers: hdr(),
+      body: JSON.stringify({ test_email })
+    });
+    const j = await r.json();
+    hideGlobalLoader();
+    if (!r.ok) throw new Error(j.detail || 'Test email failed');
+    showToast(j.message || 'Test email sent successfully!', 'success');
+  } catch (e) {
+    hideGlobalLoader();
+    showToast('SMTP Test Error: ' + e.message, 'error');
+  }
+}
+
+/* ─── System Health Diagnostics ───────────────────────────────────────────── */
+async function loadSystemHealth(showLoad = false) {
+  if (showLoad) showGlobalLoader('Diagnosing System Resources...', 'Reading CPU, RAM, and Disk metrics.');
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/system-health`, { headers: hdr() });
+    const j = await r.json();
+    if (j.success && j.health) {
+      const h = j.health;
+      const statusEl = document.getElementById('healthStatus');
+      const cpuEl = document.getElementById('healthCpu');
+      const memEl = document.getElementById('healthMem');
+      const diskEl = document.getElementById('healthDisk');
+      const dbEl = document.getElementById('healthDb');
+
+      if (statusEl) statusEl.textContent = `● ${h.status}`;
+      if (cpuEl) cpuEl.textContent = `${h.cpu_usage_pct}%`;
+      if (memEl) memEl.textContent = `${h.memory_usage_pct}% (${h.memory_used_mb}MB)`;
+      if (diskEl) diskEl.textContent = `${h.disk_free_gb} GB`;
+      if (dbEl) dbEl.textContent = `${h.db_size_mb} MB`;
+    }
+  } catch (e) {
+    // silent fallback
+  } finally {
+    if (showLoad) hideGlobalLoader();
+  }
+}
+
+/* ─── Paginated Job Queue Management with Multi-Select Delete ─────────────── */
+let currentJobPage = 1;
+let currentJobPerPage = 10;
+let currentJobSearch = '';
+let currentJobStatus = 'all';
+let selectedJobIds = new Set();
+let jobSearchTimer = null;
+
+function debounceJobSearch() {
+  clearTimeout(jobSearchTimer);
+  jobSearchTimer = setTimeout(() => {
+    currentJobSearch = document.getElementById('jobSearchInput')?.value.trim().toLowerCase() || '';
+    loadJobs(1, false);
+  }, 300);
+}
+
+function changeJobPerPage(val) {
+  currentJobPerPage = parseInt(val, 10) || 10;
+  loadJobs(1, false);
+}
+
+function toggleSelectAllJobs(checked) {
+  document.querySelectorAll('.job-row-checkbox').forEach(cb => {
+    cb.checked = checked;
+    if (checked) selectedJobIds.add(cb.dataset.id);
+    else selectedJobIds.delete(cb.dataset.id);
+  });
+  updateJobBatchButton();
+}
+
+function toggleSingleJobSelect(cb) {
+  if (cb.checked) selectedJobIds.add(cb.dataset.id);
+  else selectedJobIds.delete(cb.dataset.id);
+
+  const all = document.querySelectorAll('.job-row-checkbox');
+  const checked = document.querySelectorAll('.job-row-checkbox:checked');
+  const master = document.getElementById('selectAllJobs');
+  if (master) master.checked = (all.length > 0 && all.length === checked.length);
+  updateJobBatchButton();
+}
+
+function updateJobBatchButton() {
+  const btn = document.getElementById('btnDeleteJobsBatch');
+  const countEl = document.getElementById('selectedJobsCount');
+  if (btn && countEl) {
+    countEl.textContent = selectedJobIds.size;
+    btn.style.display = selectedJobIds.size > 0 ? 'inline-flex' : 'none';
+  }
+}
+
+async function loadJobs(page = 1, showLoad = true) {
+  if (typeof page === 'boolean') {
+    showLoad = page;
+    page = 1;
+  }
+  currentJobPage = parseInt(page, 10) || 1;
+  currentJobStatus = document.getElementById('jobStatusFilter')?.value || 'all';
+  if (showLoad) showGlobalLoader('Loading Job Queue...', 'Fetching queued and processing video tasks.');
+
+  const params = new URLSearchParams({
+    page: currentJobPage,
+    limit: currentJobPerPage,
+    status: currentJobStatus,
+    search: currentJobSearch
+  });
+
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/jobs?${params}`, { headers: hdr() });
     const j = await r.json();
     const tbody = document.getElementById('jobsTable');
     if (!tbody) return;
     tbody.innerHTML = '';
 
     const jobs = j.jobs || [];
-    const kpiJobs = document.getElementById('kpi-jobs');
-    if (kpiJobs) kpiJobs.textContent = `${jobs.length} Total`;
+    const total = j.total ?? jobs.length;
+    const totalPages = j.total_pages || Math.ceil(total / currentJobPerPage) || 1;
 
-    jobs.forEach(jb => {
-      const tr = document.createElement('tr');
-      const badge = jb.status === 'done' ? 'badge-green' : jb.status === 'failed' ? 'badge-red' : 'badge-yellow';
-      tr.innerHTML = `
-        <td style="font-family:monospace; font-weight:700;">${jb.id.slice(0, 8)}</td>
-        <td>${jb.user_id || 'guest'}</td>
-        <td style="max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(jb.youtube_url || '—')}</td>
-        <td><span class="badge ${badge}">${jb.status}</span></td>
-        <td>
-          <div style="display:flex; align-items:center; gap:0.5rem;">
-            <div class="progress-track" style="height:6px; margin:0; width:80px;">
-              <div class="progress-bar" style="width:${jb.progress_percent || 0}%;"></div>
-            </div>
-            <span style="font-size:0.75rem; font-weight:700;">${jb.progress_percent}%</span>
-          </div>
-        </td>
-        <td style="color:var(--text-muted); font-size:0.8rem;">${jb.created_at ? new Date(jb.created_at).toLocaleString() : '—'}</td>
+    const kpiJobs = document.getElementById('kpi-jobs');
+    if (kpiJobs) kpiJobs.textContent = `${total} Total`;
+
+    if (jobs.length === 0) {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="7" style="text-align:center; padding:2rem; color:var(--text-muted);">
+            No video generation jobs found matching the active filter.
+          </td>
+        </tr>
       `;
-      tbody.appendChild(tr);
-    });
+    } else {
+      jobs.forEach(jb => {
+        const tr = document.createElement('tr');
+        const badge = jb.status === 'completed' || jb.status === 'done' ? 'badge-green' : jb.status === 'failed' || jb.status === 'error' ? 'badge-red' : 'badge-yellow';
+        const isChecked = selectedJobIds.has(jb.id);
+        const failedAt = (jb.status === 'failed' || jb.status === 'error') && jb.progress_percent > 0;
+        const barColor = failedAt ? 'var(--red)' : '';
+        const phaseNames = { 5: 'Init', 25: 'Download', 30: 'Transcribe Start', 45: 'Transcribe Done', 50: 'Clip Select', 65: 'Clip Scored', 70: 'Semantic Rank', 75: 'Render Start', 100: 'Complete' };
+        let phaseLabel = '';
+        if (failedAt) {
+          const closest = Object.keys(phaseNames).map(Number).filter(v => v <= jb.progress_percent).sort((a, b) => b - a)[0];
+          phaseLabel = phaseNames[closest] || '';
+        }
+
+        tr.innerHTML = `
+          <td><input type="checkbox" class="job-row-checkbox" data-id="${jb.id}" ${isChecked ? 'checked' : ''} onchange="toggleSingleJobSelect(this)" /></td>
+          <td style="font-family:var(--font-mono); font-weight:700; color:#fff;">${jb.id.slice(0, 8)}</td>
+          <td><span class="badge badge-purple" style="font-size:0.75rem;">${escapeHtml(jb.user_name || 'System')}</span></td>
+          <td style="max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(jb.youtube_url || '')}">
+            ${escapeHtml(jb.youtube_url || '—')}
+          </td>
+          <td><span class="badge ${badge}">● ${escapeHtml(jb.status)}</span></td>
+          <td>
+            <div style="display:flex; align-items:center; gap:0.5rem;">
+              <div class="progress-track" style="height:6px; margin:0; width:70px;">
+                <div class="progress-bar" style="width:${jb.progress_percent || 0}%;${barColor ? 'background:' + barColor + ';' : ''}"></div>
+              </div>
+              <span style="font-size:0.75rem; font-weight:700;${failedAt ? 'color:var(--red);' : ''}">${jb.progress_percent || 0}%${failedAt && phaseLabel ? ' <span style="color:var(--text-muted);font-weight:400;font-size:0.65rem;">(' + phaseLabel + ')</span>' : ''}</span>
+            </div>
+          </td>
+          <td style="color:var(--text-muted); font-size:0.8rem;">${jb.created_at ? new Date(jb.created_at).toLocaleTimeString() : '—'}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    // Render Pagination
+    const infoEl = document.getElementById('jobPaginationInfo');
+    if (infoEl) {
+      const startIdx = total === 0 ? 0 : (currentJobPage - 1) * currentJobPerPage + 1;
+      const endIdx = Math.min(currentJobPage * currentJobPerPage, total);
+      infoEl.textContent = `Showing ${startIdx}–${endIdx} of ${total} jobs`;
+    }
+
+    const controlsEl = document.getElementById('jobPaginationControls');
+    if (controlsEl) {
+      controlsEl.innerHTML = '';
+      if (totalPages > 1) {
+        const prevBtn = document.createElement('button');
+        prevBtn.className = 'btn-outline btn-sm';
+        prevBtn.style.padding = '0.2rem 0.6rem';
+        prevBtn.disabled = currentJobPage <= 1;
+        prevBtn.textContent = '◀ Prev';
+        prevBtn.onclick = () => loadJobs(currentJobPage - 1, false);
+        controlsEl.appendChild(prevBtn);
+
+        const pageLabel = document.createElement('span');
+        pageLabel.style.fontSize = '0.85rem';
+        pageLabel.style.color = '#fff';
+        pageLabel.style.margin = '0 0.5rem';
+        pageLabel.textContent = `Page ${currentJobPage} of ${totalPages}`;
+        controlsEl.appendChild(pageLabel);
+
+        const nextBtn = document.createElement('button');
+        nextBtn.className = 'btn-outline btn-sm';
+        nextBtn.style.padding = '0.2rem 0.6rem';
+        nextBtn.disabled = currentJobPage >= totalPages;
+        nextBtn.textContent = 'Next ▶';
+        nextBtn.onclick = () => loadJobs(currentJobPage + 1, false);
+        controlsEl.appendChild(nextBtn);
+      }
+    }
   } catch (e) {
     showToast('Failed to load queue jobs: ' + e.message, 'error');
   } finally {
     if (showLoad) hideGlobalLoader();
   }
+}
+
+function deleteSelectedJobs() {
+  if (selectedJobIds.size === 0) return;
+  const list = Array.from(selectedJobIds);
+
+  showConfirmModal({
+    title: `Delete ${list.length} Selected Job(s)`,
+    message: `Are you sure you want to permanently delete ${list.length} selected job record(s) from the pipeline queue?`,
+    icon: '🗑️',
+    confirmText: `Yes, Delete ${list.length} Job(s)`,
+    confirmType: 'danger',
+    onConfirm: async () => {
+      showGlobalLoader('Deleting Selected Jobs...', 'Purging queue records.');
+      try {
+        const r = await fetch(`${API_BASE}/api/admin/jobs/batch`, {
+          method: 'DELETE',
+          headers: hdr(),
+          body: JSON.stringify({ job_ids: list })
+        });
+        const j = await r.json();
+        hideGlobalLoader();
+        if (!r.ok) throw new Error(j.detail || 'Delete failed');
+        selectedJobIds.clear();
+        updateJobBatchButton();
+        showToast(j.message || 'Jobs deleted successfully.', 'success');
+        loadJobs(currentJobPage, false);
+      } catch (e) {
+        hideGlobalLoader();
+        showToast('Batch Delete Error: ' + e.message, 'error');
+      }
+    }
+  });
+}
+
+function clearCompletedJobs() {
+  showConfirmModal({
+    title: 'Purge Finished Jobs',
+    message: 'Are you sure you want to remove all completed and failed jobs from the queue? Active jobs will not be affected.',
+    icon: '🧹',
+    confirmText: 'Yes, Purge Queue',
+    confirmType: 'danger',
+    onConfirm: async () => {
+      showGlobalLoader('Cleaning Job Queue...', 'Removing finished tasks.');
+      try {
+        const r = await fetch(`${API_BASE}/api/admin/jobs/clear`, {
+          method: 'POST',
+          headers: hdr()
+        });
+        const j = await r.json();
+        hideGlobalLoader();
+        if (!r.ok) throw new Error(j.detail || 'Purge failed');
+        selectedJobIds.clear();
+        updateJobBatchButton();
+        showToast(j.message || 'Finished jobs cleared.', 'success');
+        loadJobs(1, false);
+      } catch (e) {
+        hideGlobalLoader();
+        showToast('Clear Queue Error: ' + e.message, 'error');
+      }
+    }
+  });
 }
 
 /* ─── Real-Time Live System & User Audit Log Stream with Pagination ───────── */
@@ -784,7 +1289,7 @@ function renderAuditTable() {
 
       tr.innerHTML = `
         <td><input type="checkbox" ${isSelected ? 'checked' : ''} onchange="toggleSelectAudit('${ev.id}', this.checked)" /></td>
-        <td style="color:var(--text-muted); font-family:monospace; font-size:0.82rem;">${timeStr}</td>
+        <td style="color:var(--text-muted); font-family:var(--font-mono); font-size:0.82rem;">${timeStr}</td>
         <td><span class="badge ${sevClass}">${ev.severity}</span></td>
         <td><span class="badge" style="background:rgba(255,255,255,0.06);">${escapeHtml(ev.category)}</span></td>
         <td><strong style="font-size:0.88rem; color:#fff;">${escapeHtml(ev.action)}</strong></td>
@@ -949,10 +1454,18 @@ function openAuditModal(eventId) {
     `;
   }
   if (reqEl) {
-    reqEl.textContent = ev.request_data ? (typeof ev.request_data === 'object' ? JSON.stringify(ev.request_data, null, 2) : String(ev.request_data)) : 'No request payload recorded for this action.';
+    let reqStr = 'No request payload recorded for this action.';
+    if (ev.request_data) {
+      try { reqStr = typeof ev.request_data === 'object' ? JSON.stringify(ev.request_data, null, 2) : JSON.stringify(JSON.parse(ev.request_data), null, 2); } catch { reqStr = String(ev.request_data); }
+    }
+    reqEl.textContent = reqStr;
   }
   if (respEl) {
-    respEl.textContent = ev.response_data ? (typeof ev.response_data === 'object' ? JSON.stringify(ev.response_data, null, 2) : String(ev.response_data)) : (ev.severity === 'SUCCESS' ? 'Operation completed with HTTP 200 OK ✓' : 'Event recorded with no response payload.');
+    let respStr = ev.severity === 'SUCCESS' ? 'Operation completed with HTTP 200 OK ✓' : 'Event recorded with no response payload.';
+    if (ev.response_data) {
+      try { respStr = typeof ev.response_data === 'object' ? JSON.stringify(ev.response_data, null, 2) : JSON.stringify(JSON.parse(ev.response_data), null, 2); } catch { respStr = String(ev.response_data); }
+    }
+    respEl.textContent = respStr;
   }
 
   const modal = document.getElementById('auditDetailModal');
@@ -1021,6 +1534,226 @@ function resetGuestTrials() {
     }
   });
 }
+
+/* ─── In-App Password Change Modal Helper ─────────────────────────────────── */
+function openChangePasswordModal() {
+  const modal = document.getElementById('changePasswordModal');
+  if (modal) modal.style.display = 'flex';
+}
+
+function closeChangePasswordModal(e) {
+  if (e && e.target && e.target.id !== 'changePasswordModal' && !e.target.classList.contains('modal-close-btn')) return;
+  const modal = document.getElementById('changePasswordModal');
+  if (modal) modal.style.display = 'none';
+}
+
+async function submitChangePassword() {
+  const old_password = document.getElementById('cp_old_password')?.value;
+  const new_password = document.getElementById('cp_new_password')?.value;
+  const confirm_password = document.getElementById('cp_confirm_password')?.value;
+
+  if (!old_password) return showToast('Please enter your current password.', 'warning');
+  if (!new_password || new_password.length < 8) return showToast('New password must be at least 8 characters long.', 'warning');
+  if (new_password !== confirm_password) return showToast('New passwords do not match. Please re-enter.', 'warning');
+
+  showGlobalLoader('Updating Password...', 'Encrypting new security credentials.');
+  try {
+    const r = await fetch(`${API_BASE}/api/auth/change-password`, {
+      method: 'POST',
+      headers: hdr(),
+      body: JSON.stringify({ old_password, new_password })
+    });
+    const j = await r.json();
+    hideGlobalLoader();
+    if (!r.ok) throw new Error(j.detail || 'Failed to change password');
+
+    showToast('Admin password changed successfully!', 'success');
+    closeChangePasswordModal();
+    if (document.getElementById('cp_old_password')) document.getElementById('cp_old_password').value = '';
+    if (document.getElementById('cp_new_password')) document.getElementById('cp_new_password').value = '';
+    if (document.getElementById('cp_confirm_password')) document.getElementById('cp_confirm_password').value = '';
+  } catch (err) {
+    hideGlobalLoader();
+    showToast(err.message || 'Failed to change password', 'error');
+  }
+}
+
+/* ─── Pipeline Settings (Dynamic Configuration) ─────────────────────────── */
+
+const PIPELINE_FIELDS = [
+  // Video Specs
+  'target_width','target_height','target_fps','max_short_duration','min_short_duration',
+  // Clip Selection
+  'clip_min_duration','clip_max_duration','clip_top_n','clip_min_score','clip_min_separation',
+  'clip_step_size','clip_overlap_threshold','clip_distribution_strategy',
+  // Semantic Ranking
+  'semantic_default_pool_size','semantic_min_score','semantic_default_top_n','semantic_default_separation',
+  // Captions
+  'caption_font_size','caption_max_words','caption_min_words','caption_max_lines','caption_max_width','caption_y',
+  'caption_text_color','caption_highlight_color','caption_outline_color','caption_outline_width',
+  'caption_start_padding','caption_end_padding','caption_max_duration','caption_min_duration',
+  // Enhancement
+  'auto_color_filter_enabled','auto_video_filter','auto_pitch_shift_enabled','auto_pitch_semitones',
+];
+
+const BOOL_FIELDS = ['auto_color_filter_enabled','auto_pitch_shift_enabled'];
+
+async function loadPipelineConfig() {
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/pipeline-config`, { headers: hdr() });
+    const j = await r.json();
+    if (!r.ok || !j.success) throw new Error(j.detail || 'Failed to load pipeline config');
+    const cfg = j.config;
+
+    // Flatten all sections into one object
+    const flat = {};
+    for (const section of Object.values(cfg)) {
+      if (section && typeof section === 'object' && !Array.isArray(section)) {
+        Object.assign(flat, section);
+      }
+    }
+
+    // Populate fields
+    for (const key of PIPELINE_FIELDS) {
+      const el = document.getElementById(`pc_${key}`);
+      if (!el) continue;
+      const val = flat[key];
+      if (val === null || val === undefined) continue;
+      if (BOOL_FIELDS.includes(key)) {
+        el.checked = val === true || val === 'true' || val === '1';
+      } else {
+        el.value = val;
+      }
+    }
+
+    // System prompt
+    const promptEl = document.getElementById('pc_pipeline_system_prompt');
+    if (promptEl) promptEl.value = cfg.pipeline_system_prompt || '';
+
+    // Transcription provider
+    const tpEl = document.getElementById('pc_transcription_provider');
+    if (tpEl && cfg.transcription_provider) tpEl.value = cfg.transcription_provider;
+    const gmEl = document.getElementById('pc_groq_whisper_model');
+    if (gmEl && cfg.groq_whisper_model) gmEl.value = cfg.groq_whisper_model;
+
+    // Scoring weights
+    const weights = flat.scoring_weights || {};
+    renderScoringWeights(weights);
+  } catch (err) {
+    console.error('Failed to load pipeline config:', err);
+  }
+}
+
+function renderScoringWeights(weights) {
+  const grid = document.getElementById('scoringWeightsGrid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  for (const [key, val] of Object.entries(weights)) {
+    const div = document.createElement('div');
+    div.innerHTML = `<label class="auth-label">${key}</label><input class="admin-input" type="number" step="0.5" data-weight-key="${key}" value="${val}" />`;
+    grid.appendChild(div);
+  }
+}
+
+function collectScoringWeights() {
+  const weights = {};
+  document.querySelectorAll('[data-weight-key]').forEach(el => {
+    weights[el.dataset.weightKey] = parseFloat(el.value) || 0;
+  });
+  return weights;
+}
+
+async function savePipelineConfig() {
+  const payload = {};
+  for (const key of PIPELINE_FIELDS) {
+    const el = document.getElementById(`pc_${key}`);
+    if (!el) continue;
+    if (BOOL_FIELDS.includes(key)) {
+      payload[key] = el.checked ? 'true' : 'false';
+    } else {
+      const val = el.value;
+      if (val !== '' && val !== null && val !== undefined) {
+        payload[key] = val;
+      }
+    }
+  }
+  // Scoring weights as JSON (only if weight inputs exist in DOM)
+  const weights = collectScoringWeights();
+  if (Object.keys(weights).length > 0) {
+    payload.scoring_weights = JSON.stringify(weights);
+  }
+  // System prompt
+  const promptEl = document.getElementById('pc_pipeline_system_prompt');
+  if (promptEl) payload.pipeline_system_prompt = promptEl.value;
+  // Transcription engine
+  const tpEl = document.getElementById('pc_transcription_provider');
+  if (tpEl) payload.transcription_provider = tpEl.value;
+  const gmEl = document.getElementById('pc_groq_whisper_model');
+  if (gmEl) payload.groq_whisper_model = gmEl.value;
+
+  showGlobalLoader('Saving Pipeline Settings...', 'Applying configuration to all components.');
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/pipeline-config`, {
+      method: 'POST',
+      headers: hdr(),
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json();
+    hideGlobalLoader();
+    if (!r.ok || !j.success) throw new Error(j.detail || 'Failed to save');
+    showToast(j.message || 'Pipeline settings saved!', 'success');
+    // Reload to reflect saved values
+    loadPipelineConfig();
+  } catch (err) {
+    hideGlobalLoader();
+    showToast(err.message || 'Save failed', 'error');
+  }
+}
+
+async function saveTranscriptionEngine() {
+  const payload = {};
+  const tpEl = document.getElementById('pc_transcription_provider');
+  const gmEl = document.getElementById('pc_groq_whisper_model');
+  if (tpEl) payload.transcription_provider = tpEl.value;
+  if (gmEl) payload.groq_whisper_model = gmEl.value;
+
+  showGlobalLoader('Saving Transcription Engine...', 'Applying provider configuration.');
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/pipeline-config`, {
+      method: 'POST',
+      headers: hdr(),
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json();
+    hideGlobalLoader();
+    if (!r.ok || !j.success) throw new Error(j.detail || 'Failed to save');
+    showToast('Transcription engine saved!', 'success');
+    loadPipelineConfig();
+  } catch (err) {
+    hideGlobalLoader();
+    showToast(err.message || 'Save failed', 'error');
+  }
+}
+
+async function resetPipelineConfig() {
+  if (!confirm('Reset ALL pipeline settings to defaults? This cannot be undone.')) return;
+  showGlobalLoader('Resetting...', 'Restoring hardcoded defaults.');
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/pipeline-config/reset`, {
+      method: 'POST',
+      headers: hdr(),
+    });
+    const j = await r.json();
+    hideGlobalLoader();
+    if (!r.ok || !j.success) throw new Error(j.detail || 'Reset failed');
+    showToast(j.message || 'Pipeline settings reset!', 'success');
+    loadPipelineConfig();
+  } catch (err) {
+    hideGlobalLoader();
+    showToast(err.message || 'Reset failed', 'error');
+  }
+}
+
 
 /* ─── Initialization ─────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {

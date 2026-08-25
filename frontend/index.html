@@ -43,11 +43,12 @@
             <a href="login.html" class="btn-outline btn-sm">Sign In</a>
             <a href="signup.html" class="btn-primary btn-sm">Sign Up</a>
           </div>
-          <div id="authLoggedIn" style="display:none; align-items:center; gap:0.75rem;">
+          <div id="authLoggedIn" style="display:none; align-items:center; gap:0.6rem;">
             <div class="user-badge-pill">
               <span class="user-avatar-circle" id="userAvatar">U</span>
               <span style="font-size:0.85rem; font-weight:600; color:var(--text-main);" id="authUserName">User</span>
             </div>
+            <button class="btn-outline btn-sm" onclick="openChangePasswordModal()" title="Change Account Password" style="padding:0.35rem 0.6rem;">🔑</button>
             <button class="btn-outline btn-sm btn-danger-outline" onclick="handleLogout()">Logout</button>
           </div>
         </div>
@@ -357,6 +358,42 @@
       </div>
     </div>
   </footer>
+
+  <!-- ─── In-App Change Password Modal ────────────────────────────── -->
+  <div id="changePasswordModal" class="video-modal-backdrop" style="display:none;" onclick="closeChangePasswordModal(event)">
+    <div class="video-modal-content" style="max-width:440px; padding:2rem;" onclick="event.stopPropagation()">
+      <div class="video-modal-header">
+        <h3 class="modal-title">🔑 Change Account Password</h3>
+        <button class="modal-close-btn" onclick="closeChangePasswordModal()">✕</button>
+      </div>
+      <div style="margin-top:1.25rem; display:flex; flex-direction:column; gap:1.15rem;">
+        <div class="auth-field">
+          <label class="auth-label">Current Password</label>
+          <div class="auth-input-container">
+            <input id="cp_old_password" class="auth-input" type="password" placeholder="••••••••" />
+            <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('cp_old_password', this)">👁️</button>
+          </div>
+        </div>
+        <div class="auth-field">
+          <label class="auth-label">New Password (at least 8 chars)</label>
+          <div class="auth-input-container">
+            <input id="cp_new_password" class="auth-input" type="password" placeholder="••••••••" />
+            <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('cp_new_password', this)">👁️</button>
+          </div>
+        </div>
+        <div class="auth-field">
+          <label class="auth-label">Confirm New Password</label>
+          <div class="auth-input-container">
+            <input id="cp_confirm_password" class="auth-input" type="password" placeholder="••••••••" />
+            <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('cp_confirm_password', this)">👁️</button>
+          </div>
+        </div>
+        <button class="btn-primary" onclick="submitChangePassword()" style="width:100%; justify-content:center; padding:0.8rem; margin-top:0.5rem;">
+          Update Password Now
+        </button>
+      </div>
+    </div>
+  </div>
 
   <script src="auth.js"></script>
   <script src="app.js"></script>

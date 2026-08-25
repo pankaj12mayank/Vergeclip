@@ -17,21 +17,19 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from src.config import PROJECT_ROOT
+from src.config import PROJECT_ROOT, get_setting
 
-try:
-    from src.config import settings as _settings
+def _resolve_storage_root() -> Path:
+    """Resolve storage root from DB settings (dynamic)."""
+    try:
+        sp = get_setting("STORAGE_PATH", "./storage")
+    except Exception:
+        sp = "./storage"
+    if not os.path.isabs(sp):
+        return (PROJECT_ROOT / sp).resolve()
+    return Path(sp)
 
-    _storage_path = getattr(_settings, "STORAGE_PATH", "./storage") if _settings else "./storage"
-except Exception:
-    _storage_path = "./storage"
-
-# Resolve absolute
-if not os.path.isabs(_storage_path):
-    STORAGE_ROOT = (PROJECT_ROOT / _storage_path).resolve()
-else:
-    STORAGE_ROOT = Path(_storage_path).resolve()
-
+STORAGE_ROOT = _resolve_storage_root()
 STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 
 

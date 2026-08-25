@@ -21,16 +21,22 @@ from typing import Optional
 
 import numpy as np
 
-from src.config import FFMPEG_BIN, TARGET_HEIGHT, TARGET_WIDTH
+from src.config import FFMPEG_BIN, get_video_spec_config
 from src.face_tracker import FaceBox, FrameData
 from src.logger import get_logger
 
 log = get_logger(__name__)
 
-# ─── Reframing constants ──────────────────────────────────────────────────────
-OUT_W = TARGET_WIDTH        # 1080
-OUT_H = TARGET_HEIGHT       # 1920
-ASPECT = OUT_W / OUT_H      # 9/16
+# ─── Reframing constants (loaded dynamically from DB/settings) ─────────────────
+
+def _get_out_w():
+    return get_video_spec_config()["target_width"]
+
+def _get_out_h():
+    return get_video_spec_config()["target_height"]
+
+def _get_aspect():
+    return _get_out_w() / _get_out_h()
 
 # Camera smoothing — lower alpha = smoother but laggier
 SMOOTH_ALPHA = 0.08         # Very smooth: matches a slow broadcast PTZ feel
@@ -80,12 +86,12 @@ def _compute_target_crop(
     """
     # Crop dimensions to fill 9:16 at full source height
     crop_h = float(src_h)
-    crop_w = crop_h * ASPECT
+    crop_w = crop_h * _get_aspect()
 
     # If crop_w > src_w, scale down to fit
     if crop_w > src_w:
         crop_w = float(src_w)
-        crop_h = crop_w / ASPECT
+        crop_h = crop_w / _get_aspect()
 
     if face is None:
         # Fallback: center crop
@@ -167,7 +173,7 @@ def compute_crop_plan(
         "Crop plan ready: %d frames, crop=%dx%d -> output %dx%d",
         len(crop_plan),
         crop_plan[0].w, crop_plan[0].h,
-        OUT_W, OUT_H,
+        _get_out_w(), _get_out_h(),
     )
     return crop_plan
 
@@ -246,7 +252,7 @@ def render_reframed_video(
     tmp_raw = out_path.parent / "_reframed_noaudio.mp4"
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(tmp_raw), fourcc, src_fps, (OUT_W, OUT_H))
+    writer = cv2.VideoWriter(str(tmp_raw), fourcc, src_fps, (_get_out_w(), _get_out_h()))
 
     if not writer.isOpened():
         cap.release()
@@ -254,7 +260,7 @@ def render_reframed_video(
 
     log.info(
         "Reframing %dx%d -> %dx%d @ %.2ffps (%d frames)…",
-        src_w, src_h, OUT_W, OUT_H, src_fps, total_frames
+        src_w, src_h, _get_out_w(), _get_out_h(), src_fps, total_frames
     )
 
     last_crop = crop_plan[0] if crop_plan else CropWindow(0, 0, 0, 0, src_w, src_h)
@@ -280,14 +286,14 @@ def render_reframed_video(
             # Fallback: center crop
             cx = src_w // 2
             cy = src_h // 2
-            cw_ = min(src_w, int(src_h * ASPECT))
-            ch_ = min(src_h, int(cw_ / ASPECT))
+            cw_ = min(src_w, int(src_h * _get_aspect()))
+            ch_ = min(src_h, int(cw_ / _get_aspect()))
             cropped = frame[
                 max(0, cy - ch_ // 2): min(src_h, cy + ch_ // 2),
                 max(0, cx - cw_ // 2): min(src_w, cx + cw_ // 2),
             ]
 
-        resized = cv2.resize(cropped, (OUT_W, OUT_H), interpolation=cv2.INTER_LINEAR)
+        resized = cv2.resize(cropped, (_get_out_w(), _get_out_h()), interpolation=cv2.INTER_LINEAR)
         writer.write(resized)
         frame_idx += 1
 

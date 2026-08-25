@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Sign In — Vergeclip</title>
+  <title>Sign In — Vergeclip AI</title>
   <meta name="description" content="Sign in to your Vergeclip account to access your viral video generators and saved clips." />
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎙️</text></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -49,7 +49,10 @@
         </div>
 
         <div class="auth-field">
-          <label class="auth-label" for="login_password">Password</label>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.35rem;">
+            <label class="auth-label" for="login_password" style="margin-bottom:0;">Password</label>
+            <a href="#" onclick="openForgotPasswordModal(event)" style="font-size:0.82rem; color:var(--cyan); text-decoration:none;">Forgot password?</a>
+          </div>
           <div class="auth-input-container">
             <input 
               id="login_password" 
@@ -77,6 +80,57 @@
     </div>
   </div>
 
+  <!-- ─── Forgot Password / Recovery Modal ──────────────────────────── -->
+  <div id="forgotPasswordModal" class="video-modal-backdrop" style="display:none;" onclick="closeForgotPasswordModal(event)">
+    <div class="video-modal-content" style="max-width:460px; padding:2rem;" onclick="event.stopPropagation()">
+      <div class="video-modal-header">
+        <h3 id="forgotModalTitle" class="modal-title">🔑 Account Password Recovery</h3>
+        <button class="modal-close-btn" onclick="closeForgotPasswordModal()">✕</button>
+      </div>
+
+      <!-- Step 1: Enter Email -->
+      <div id="forgotStep1" style="display:flex; flex-direction:column; gap:1.15rem; margin-top:1.25rem;">
+        <p style="font-size:0.88rem; color:var(--text-muted); line-height:1.5;">
+          Enter the email address associated with your Vergeclip account and we'll help you reset your password.
+        </p>
+        <div class="auth-field">
+          <label class="auth-label">Registered Email Address</label>
+          <div class="auth-input-container">
+            <input id="forgot_email" class="auth-input" type="email" placeholder="name@example.com" />
+          </div>
+        </div>
+        <button class="btn-primary" onclick="submitForgotPasswordRequest()" style="width:100%; justify-content:center; padding:0.8rem;">
+          Send Recovery Instructions
+        </button>
+      </div>
+
+      <!-- Step 2: Enter New Password (if token active) -->
+      <div id="forgotStep2" style="display:none; flex-direction:column; gap:1.15rem; margin-top:1.25rem;">
+        <p id="forgotStep2Msg" style="font-size:0.88rem; color:#34d399; line-height:1.5;">
+          Recovery token verified! Choose your new secure password:
+        </p>
+        <input type="hidden" id="reset_token_holder" />
+        <div class="auth-field">
+          <label class="auth-label">New Password (at least 8 chars)</label>
+          <div class="auth-input-container">
+            <input id="reset_new_password" class="auth-input" type="password" placeholder="••••••••" />
+            <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('reset_new_password', this)">👁️</button>
+          </div>
+        </div>
+        <div class="auth-field">
+          <label class="auth-label">Confirm New Password</label>
+          <div class="auth-input-container">
+            <input id="reset_confirm_password" class="auth-input" type="password" placeholder="••••••••" />
+            <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('reset_confirm_password', this)">👁️</button>
+          </div>
+        </div>
+        <button class="btn-primary" onclick="submitResetPasswordConfirm()" style="width:100%; justify-content:center; padding:0.8rem;">
+          Update Password & Sign In
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- ─── Toast Notifications Container ──────────────────────────────── -->
   <div class="toast-container" id="toastContainer"></div>
 
@@ -84,7 +138,7 @@
   <footer class="app-footer">
     <div class="footer-inner">
       <div class="footer-bottom-bar" style="border-top:none; padding-top:0;">
-        <span>© 2026 PodcastShorts AI</span>
+        <span>© 2026 Vergeclip AI</span>
         <span>FastAPI & Whisper Engine</span>
       </div>
     </div>
@@ -92,6 +146,98 @@
 
   <script src="auth.js"></script>
   <script>
+    function openForgotPasswordModal(e) {
+      if (e) e.preventDefault();
+      document.getElementById('forgotStep1').style.display = 'flex';
+      document.getElementById('forgotStep2').style.display = 'none';
+      document.getElementById('forgotPasswordModal').style.display = 'flex';
+    }
+
+    function closeForgotPasswordModal(e) {
+      if (e && e.target && e.target.id !== 'forgotPasswordModal' && !e.target.classList.contains('modal-close-btn')) return;
+      document.getElementById('forgotPasswordModal').style.display = 'none';
+    }
+
+    async function submitForgotPasswordRequest() {
+      const email = document.getElementById('forgot_email')?.value.trim();
+      if (!email || !email.includes('@')) {
+        return showToast('Please enter a valid email address.', 'warning');
+      }
+
+      showGlobalLoader('Verifying Account...', 'Checking registered records and generating recovery credentials.');
+      try {
+        const r = await fetch(`${getApiBase()}/api/auth/forgot-password`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email })
+        });
+        const j = await r.json();
+        hideGlobalLoader();
+
+        if (j.reset_token) {
+          // Direct token resolution (local dev / instant recovery)
+          document.getElementById('reset_token_holder').value = j.reset_token;
+          document.getElementById('forgotStep1').style.display = 'none';
+          document.getElementById('forgotStep2').style.display = 'flex';
+          showToast('Account verified! Enter your new password below.', 'success');
+        } else {
+          showToast(j.message || 'Recovery email dispatched!', 'success');
+          closeForgotPasswordModal();
+        }
+      } catch (e) {
+        hideGlobalLoader();
+        showToast('Recovery error: ' + e.message, 'error');
+      }
+    }
+
+    async function submitResetPasswordConfirm() {
+      const token = document.getElementById('reset_token_holder')?.value;
+      const p1 = document.getElementById('reset_new_password')?.value;
+      const p2 = document.getElementById('reset_confirm_password')?.value;
+
+      if (!token) return showToast('Reset token missing. Please request recovery again.', 'error');
+      if (!p1 || p1.length < 8) return showToast('Password must be at least 8 characters.', 'warning');
+      if (p1 !== p2) return showToast('Passwords do not match. Please re-enter.', 'warning');
+
+      showGlobalLoader('Updating Password...', 'Encrypting new security credentials.');
+      try {
+        const r = await fetch(`${getApiBase()}/api/auth/reset-password`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token, new_password: p1 })
+        });
+        const j = await r.json();
+        hideGlobalLoader();
+        if (!r.ok) throw new Error(j.detail || 'Reset failed');
+
+        showToast('Password updated successfully! Signing you in...', 'success');
+        closeForgotPasswordModal();
+        
+        // Auto-fill identifier and password
+        const email = document.getElementById('forgot_email')?.value.trim();
+        if (email) document.getElementById('login_identifier').value = email;
+        document.getElementById('login_password').value = p1;
+        setTimeout(() => handleLogin(), 600);
+      } catch (e) {
+        hideGlobalLoader();
+        showToast('Failed to reset password: ' + e.message, 'error');
+      }
+    }
+
+    // Auto-check URL reset token parameters e.g. login.html?token=xyz&email=abc
+    document.addEventListener('DOMContentLoaded', () => {
+      const urlParams = new URLSearchParams(window.location.search);
+      const token = urlParams.get('token');
+      const email = urlParams.get('email');
+      if (token) {
+        document.getElementById('reset_token_holder').value = token;
+        if (email) document.getElementById('forgot_email').value = email;
+        document.getElementById('forgotStep1').style.display = 'none';
+        document.getElementById('forgotStep2').style.display = 'flex';
+        document.getElementById('forgotPasswordModal').style.display = 'flex';
+      }
+    });
+
     // Auto redirect if already logged in
     (async () => {
       if (localStorage.getItem('ps_auth_token')) {

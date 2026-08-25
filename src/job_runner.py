@@ -72,8 +72,11 @@ def run_job_pipeline(job: Job, db: Session):
         # Phase 2: Transcribe
         _update_progress(job, db, 30)
         from app.transcriber import transcribe_video
+        from src.config import get_setting
+        _tp = get_setting("transcription_provider", "groq")
+        _gm = get_setting("groq_whisper_model", "whisper-large-v3-turbo")
 
-        tr_result = transcribe_video(video_path=video_path, language=None, keep_audio=False)
+        tr_result = transcribe_video(video_path=video_path, provider=_tp, model_name=_gm, language=None, keep_audio=False)
         _update_progress(job, db, 45)
 
         # Phase 3: Select

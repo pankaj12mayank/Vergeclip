@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from src.logger import get_logger
+from src.config import FFMPEG_BIN
 
 log = get_logger("editor_processor")
 
@@ -166,7 +167,7 @@ def export_edited_video(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    cmd = ["ffmpeg", "-y"]
+    cmd = [FFMPEG_BIN, "-y"]
 
     # Fast seek before input if start_time is given
     if start_time is not None and start_time > 0:
