@@ -1780,7 +1780,7 @@ async def admin_save_pipeline_config(request: Request):
 
     allowed_keys = {
         # Transcription
-        "transcription_provider", "groq_whisper_model",
+        "transcription_provider", "groq_whisper_model", "faster_whisper_model",
         # Video specs
         "target_width", "target_height", "target_fps", "max_short_duration", "min_short_duration",
         # Clip selection
@@ -2309,8 +2309,9 @@ TARGET DURATION: {duration} seconds
 
 Format with clear [00:00 - 00:03] Hook, Problem, 3 Insights, Twist, and Call-to-Action, followed by Viral Title and 10 Hashtags."""
 
+    script_result = None
     try:
-        script_result = _call_llm(prompt=user_req, system_prompt=sys_prompt)
+        script_result = _call_llm(prompt=user_req, system_prompt=sys_prompt, max_tokens=2048)
         log_system_event("PIPELINE", "Topic Script Generated", f"Generated script for topic '{topic}' ({niche})", severity="SUCCESS")
     except Exception as e:
         log.warning("LLM script generation failed: %s", e)
@@ -2542,18 +2543,57 @@ async def list_inputs():
 
 @app.get("/api/files/output", tags=["files"])
 @app.get("/api/outputs", tags=["files"])
-async def list_outputs():
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    files = []
-    for f in OUTPUT_DIR.glob("*.mp4"):
-        if f.is_file():
+async def list_outputs(request: Request):
+    from src.auth import decode_token, get_user_by_id
+    from src.models import GeneratedClip, SessionLocal
+
+    user_id = None
+    is_admin = False
+    auth = request.headers.get("authorization", "")
+    token = None
+    if auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+    if not token:
+        return {"success": True, "files": []}
+    try:
+        pl = decode_token(token)
+        uid = int(pl.get("sub"))
+        user = get_user_by_id(uid)
+        if not user:
+            return {"success": True, "files": []}
+        user_id = user.id
+        is_admin = user.role == "admin" or user.username.lower() == "admin"
+    except Exception:
+        return {"success": True, "files": []}
+
+    db = SessionLocal()
+    try:
+        q = db.query(GeneratedClip)
+        if not is_admin:
+            q = q.filter(GeneratedClip.user_id == user_id)
+        clips = q.order_by(GeneratedClip.created_at.desc()).all()
+
+        files = []
+        for clip in clips:
+            fp = Path(clip.file_path)
+            if not fp.exists() or not fp.is_file():
+                continue
             try:
-                st = f.stat()
-                files.append({"name": f.name, "size_mb": round(st.st_size / (1024 * 1024), 2), "modified": st.st_mtime, "url": f"/api/stream/output/{f.name}"})
+                st = fp.stat()
+                files.append({
+                    "name": fp.name,
+                    "size_mb": round(st.st_size / (1024 * 1024), 2),
+                    "modified": st.st_mtime,
+                    "url": f"/api/stream/output/{fp.name}",
+                    "clip_id": clip.id,
+                    "job_id": clip.job_id,
+                    "user_id": clip.user_id,
+                })
             except Exception:
                 continue
-    files.sort(key=lambda x: x["modified"] if "modified" in x else x["name"], reverse=True)
-    # Frontend expects sorted by name? Keep modified reverse for newest first, but stable
+    finally:
+        db.close()
+
     return {"success": True, "files": files}
 
 
@@ -2650,47 +2690,72 @@ async def stream_input(filename: str, request: Request):
 @app.post("/api/files/output/clear", tags=["files"])
 @app.post("/api/outputs/clear", tags=["files"])
 async def clear_outputs(request: Request):
-    # Auth if required
     from src.auth import AUTH_REQUIRED, decode_token, get_user_by_id
+    from src.models import GeneratedClip, SessionLocal
 
+    user_id = None
+    is_admin = False
     if AUTH_REQUIRED:
         auth = request.headers.get("authorization", "")
         if not auth.lower().startswith("bearer "):
             raise HTTPException(status_code=401, detail="Authentication required")
         try:
             pl = decode_token(auth.split(" ", 1)[1].strip())
-            if not get_user_by_id(int(pl.get("sub"))):
+            uid = int(pl.get("sub"))
+            user = get_user_by_id(uid)
+            if not user:
                 raise HTTPException(status_code=401, detail="User not found")
+            user_id = user.id
+            is_admin = user.role == "admin" or user.username.lower() == "admin"
         except HTTPException:
             raise
         except Exception:
             raise HTTPException(status_code=401, detail="Invalid token")
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    count = 0
-    for f in OUTPUT_DIR.glob("*.mp4"):
-        try:
-            f.unlink(missing_ok=True)
-            count += 1
-        except Exception:
-            continue
-    log.info("Cleared %d output files (requested by %s)", count, request.client.host if request.client else "unknown")
-    return {"success": True, "message": f"Deleted {count} output files"}
+    db = SessionLocal()
+    try:
+        q = db.query(GeneratedClip)
+        if user_id and not is_admin:
+            q = q.filter(GeneratedClip.user_id == user_id)
+        clips = q.all()
+        count = 0
+        for clip in clips:
+            fp = Path(clip.file_path)
+            if fp.exists():
+                try:
+                    fp.unlink(missing_ok=True)
+                    count += 1
+                except Exception:
+                    pass
+        q.delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+
+    log.info("Cleared %d clips for user_id=%s (admin=%s)", count, user_id, is_admin)
+    return {"success": True, "message": f"Deleted {count} clips from your gallery"}
 
 
 @app.post("/api/files/output/delete", tags=["files"])
 @app.post("/api/outputs/delete", tags=["files"])
 async def delete_output(payload: Request):
     from src.auth import AUTH_REQUIRED, decode_token, get_user_by_id
+    from src.models import GeneratedClip, SessionLocal
 
+    user_id = None
+    is_admin = False
     if AUTH_REQUIRED:
         auth = payload.headers.get("authorization", "")
         if not auth.lower().startswith("bearer "):
             raise HTTPException(status_code=401, detail="Authentication required")
         try:
             pl = decode_token(auth.split(" ", 1)[1].strip())
-            if not get_user_by_id(int(pl.get("sub"))):
+            uid = int(pl.get("sub"))
+            user = get_user_by_id(uid)
+            if not user:
                 raise HTTPException(status_code=401, detail="User not found")
+            user_id = user.id
+            is_admin = user.role == "admin" or user.username.lower() == "admin"
         except HTTPException:
             raise
         except Exception:
@@ -2706,9 +2771,25 @@ async def delete_output(payload: Request):
     target = _safe_join(OUTPUT_DIR, filename)
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
+
+    # Verify ownership
+    db = SessionLocal()
+    try:
+        clip = db.query(GeneratedClip).filter(
+            GeneratedClip.file_path.like(f"%{filename}"),
+        ).first()
+        if clip and user_id and not is_admin:
+            if clip.user_id != user_id:
+                raise HTTPException(status_code=403, detail="You don't own this clip")
+        if clip:
+            db.delete(clip)
+            db.commit()
+    finally:
+        db.close()
+
     try:
         target.unlink()
-        log.info("Deleted %s", filename)
+        log.info("Deleted %s (user_id=%s)", filename, user_id)
         return {"success": True, "message": f"Deleted {filename}"}
     except Exception as exc:
         log.error("Delete failed %s: %s", filename, exc)
@@ -3118,8 +3199,14 @@ def _run_full_pipeline_task(job_id: str, url: str, filename: str, num_shorts: Op
 
         from src.config import get_setting
         _tp = get_setting("transcription_provider", "groq")
-        _gm = get_setting("groq_whisper_model", "whisper-large-v3-turbo")
-        _tp_label = "Groq Whisper (FREE)" if _tp == "groq" else "AssemblyAI Cloud"
+        _gm = get_setting("groq_whisper_model", "whisper-large-v3")
+        if _tp == "groq":
+            _tp_label = f"Groq Whisper ({_gm})"
+        elif _tp == "faster_whisper":
+            _fw_model = get_setting("faster_whisper_model", "base")
+            _tp_label = f"Faster-Whisper ({_fw_model}, local)"
+        else:
+            _tp_label = "AssemblyAI Cloud"
         log_pipeline_msg(f"🎙️ [2/5] Transcribing audio with {_tp_label}...")
 
         def _tr_progress_hook(msg: str, pct: int):
@@ -3131,7 +3218,8 @@ def _run_full_pipeline_task(job_id: str, url: str, filename: str, num_shorts: Op
             _sync_db_progress(min(45, max(28, pct)))
 
         from app.transcriber import transcribe_video
-        tr_result = transcribe_video(video_path=video_path, provider=_tp, model_name=_gm, language=None, keep_audio=False, progress_cb=_tr_progress_hook)
+        _tm = _gm if _tp == "groq" else (get_setting("faster_whisper_model", "base") if _tp == "faster_whisper" else None)
+        tr_result = transcribe_video(video_path=video_path, provider=_tp, model_name=_tm, language=None, keep_audio=False)
         
         if _is_cancelled():
             raise RuntimeError("Pipeline cancelled by user")
@@ -3155,15 +3243,17 @@ def _run_full_pipeline_task(job_id: str, url: str, filename: str, num_shorts: Op
         _sync_db_progress(50)
         log_pipeline_msg("⚡ [3/5] Extracting all viral highlight moments across full video...")
         from app.clip_selector import run_selection
+        from src.config import get_clip_selection_config
 
+        _clip_cfg = get_clip_selection_config()
         top_count = 100 if num_shorts is None else max(num_shorts * 2, 20)
         report = run_selection(
             transcript_path=TEMP_DIR / "transcript.json",
-            min_dur=15.0,
-            max_dur=30.0,
+            min_dur=_clip_cfg["clip_min_duration"],
+            max_dur=_clip_cfg["clip_max_duration"],
             top_n=top_count,
-            min_score=20.0,
-            min_separation=20.0,
+            min_score=_clip_cfg["clip_min_score"],
+            min_separation=_clip_cfg["clip_min_separation"],
         )
         log_pipeline_msg(f"✓ Selected {report['final_count']} candidate clips from entire video")
         
@@ -3181,15 +3271,17 @@ def _run_full_pipeline_task(job_id: str, url: str, filename: str, num_shorts: Op
         candidates_json = TEMP_DIR / "candidates.json"
         try:
             from app.semantic_ranker import run_semantic_ranking
+            from src.config import get_clip_selection_config
 
+            _sel_cfg = get_clip_selection_config()
             rank_target = report["final_count"] if num_shorts is None else num_shorts
             rank_result = run_semantic_ranking(
                 candidates_path=TEMP_DIR / "candidate_pool.json",
                 transcript_path=TEMP_DIR / "transcript.json",
                 top_n=rank_target,
                 semantic_pool_size=max(rank_target, 50),
-                min_score=20.0,
-                min_separation=20.0,
+                min_score=_sel_cfg["clip_min_score"],
+                min_separation=_sel_cfg["clip_min_separation"],
             )
             candidates_json = Path(rank_result["json_path"])
             log_pipeline_msg(f"✓ AI Semantic ranking complete: {len(rank_result['final_selected'])} top shorts ranked")
@@ -3237,7 +3329,7 @@ def _run_full_pipeline_task(job_id: str, url: str, filename: str, num_shorts: Op
                 break
 
             clip = clips_to_render[idx - 1]
-            out_name = f"short_{idx:03d}.mp4"
+            out_name = f"short_{job_id[:8]}_{idx:03d}.mp4"
             log_pipeline_msg(f"  Rendering Short #{idx}/{num_to_render}: {clip.get('text','')[:45]}...")
             try:
                 result = render_clip(
@@ -3249,6 +3341,26 @@ def _run_full_pipeline_task(job_id: str, url: str, filename: str, num_shorts: Op
                 )
                 rendered_files.append(out_name)
                 log_pipeline_msg(f"  ✓ Short #{idx} rendered → {out_name}")
+                # Save clip record to DB for user-bound gallery
+                out_path = OUTPUT_DIR / out_name
+                if out_path.exists():
+                    try:
+                        from src.models import GeneratedClip, SessionLocal as _SL
+                        _clip_db = _SL()
+                        try:
+                            _clip = GeneratedClip(
+                                job_id=job_id,
+                                user_id=user_id or 1,
+                                file_path=str(out_path),
+                                duration_seconds=float(clip.get("end", 0) - clip.get("start", 0)) if clip.get("end") and clip.get("start") else 0,
+                                hook_score=float(clip.get("score", 0)),
+                            )
+                            _clip_db.add(_clip)
+                            _clip_db.commit()
+                        finally:
+                            _clip_db.close()
+                    except Exception as clip_exc:
+                        log.warning("Failed to save clip record: %s", clip_exc)
             except Exception as rend_exc:
                 log_pipeline_msg(f"  ✗ Failed rendering #{idx}: {rend_exc}")
                 log.error("Render failed #%d: %s", idx, rend_exc)

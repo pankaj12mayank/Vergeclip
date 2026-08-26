@@ -670,7 +670,7 @@ def render_captions_on_video(
             str(out_path),
         ])
         log.info("Direct audio-video mux with FFmpeg (Auto-Filter & Pitch-Shift applied)…")
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
             raise RuntimeError(
                 f"FFmpeg audio mux failed.\nCommand: {' '.join(cmd)}\nStderr:\n{result.stderr}"
@@ -757,7 +757,7 @@ def render_captions_on_video(
     ])
 
     log.info("Encoding final captioned video with FFmpeg (Auto-Filter & Pitch-Shift applied)…")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     if result.returncode != 0:
         raise RuntimeError(
             f"FFmpeg caption mux failed.\nCommand: {' '.join(cmd)}\nStderr:\n{result.stderr}"

@@ -74,7 +74,7 @@ def run_job_pipeline(job: Job, db: Session):
         from app.transcriber import transcribe_video
         from src.config import get_setting
         _tp = get_setting("transcription_provider", "groq")
-        _gm = get_setting("groq_whisper_model", "whisper-large-v3-turbo")
+        _gm = get_setting("groq_whisper_model", "whisper-large-v3")
 
         tr_result = transcribe_video(video_path=video_path, provider=_tp, model_name=_gm, language=None, keep_audio=False)
         _update_progress(job, db, 45)
@@ -134,7 +134,7 @@ def run_job_pipeline(job: Job, db: Session):
 
         rendered = []
         for idx in range(1, num_to_render + 1):
-            out_name = f"short_{idx:03d}.mp4"
+            out_name = f"short_{job_id[:8]}_{idx:03d}.mp4"
             try:
                 result = render_clip(
                     rank=idx,

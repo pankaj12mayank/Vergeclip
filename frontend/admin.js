@@ -1635,6 +1635,9 @@ async function loadPipelineConfig() {
     if (tpEl && cfg.transcription_provider) tpEl.value = cfg.transcription_provider;
     const gmEl = document.getElementById('pc_groq_whisper_model');
     if (gmEl && cfg.groq_whisper_model) gmEl.value = cfg.groq_whisper_model;
+    const fwEl = document.getElementById('pc_faster_whisper_model');
+    if (fwEl && cfg.faster_whisper_model) fwEl.value = cfg.faster_whisper_model;
+    toggleTranscriptionOptions();
 
     // Scoring weights
     const weights = flat.scoring_weights || {};
@@ -1714,8 +1717,10 @@ async function saveTranscriptionEngine() {
   const payload = {};
   const tpEl = document.getElementById('pc_transcription_provider');
   const gmEl = document.getElementById('pc_groq_whisper_model');
+  const fwEl = document.getElementById('pc_faster_whisper_model');
   if (tpEl) payload.transcription_provider = tpEl.value;
   if (gmEl) payload.groq_whisper_model = gmEl.value;
+  if (fwEl) payload.faster_whisper_model = fwEl.value;
 
   showGlobalLoader('Saving Transcription Engine...', 'Applying provider configuration.');
   try {
@@ -1733,6 +1738,14 @@ async function saveTranscriptionEngine() {
     hideGlobalLoader();
     showToast(err.message || 'Save failed', 'error');
   }
+}
+
+function toggleTranscriptionOptions() {
+  const provider = document.getElementById('pc_transcription_provider')?.value || 'groq';
+  const groqWrap = document.getElementById('groqModelWrap');
+  const fwWrap = document.getElementById('fasterWhisperModelWrap');
+  if (groqWrap) groqWrap.style.display = provider === 'groq' ? '' : 'none';
+  if (fwWrap) fwWrap.style.display = provider === 'faster_whisper' ? '' : 'none';
 }
 
 async function resetPipelineConfig() {

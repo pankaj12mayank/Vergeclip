@@ -215,7 +215,7 @@ def export_edited_video(
     ])
 
     log.info("Running FFmpeg export: %s", " ".join(cmd))
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300)
 
     if proc.returncode != 0:
         log.error("FFmpeg export failed with code %d: %s", proc.returncode, proc.stderr)

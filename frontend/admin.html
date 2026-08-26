@@ -350,20 +350,30 @@
           <!-- Transcription Engine -->
           <div class="admin-card" style="margin-bottom:1rem; border-left:3px solid var(--accent-primary);">
             <h3 class="admin-card-title">🎙️ Transcription Engine</h3>
-            <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:0.75rem;">Choose which speech-to-text engine powers Phase 2. Groq Whisper is FREE (8 hrs/day, no card). AssemblyAI is paid but offers speaker diarization.</p>
+            <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:0.75rem;">Choose which speech-to-text engine powers Phase 2. Groq Whisper is FREE (requires org model enabled). Faster-Whisper runs locally (no API key). AssemblyAI is cloud paid.</p>
             <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:0.75rem; margin-top:0.75rem;">
               <div>
                 <label class="auth-label">Active Provider</label>
-                <select id="pc_transcription_provider" class="admin-input">
-                  <option value="groq">🆓 Groq Whisper (FREE — recommended)</option>
-                  <option value="assemblyai">💬 AssemblyAI (paid — $0.15/hr)</option>
+                <select id="pc_transcription_provider" class="admin-input" onchange="toggleTranscriptionOptions()">
+                  <option value="groq">☁️ Groq Whisper (FREE — cloud)</option>
+                  <option value="faster_whisper">⚡ Faster-Whisper (FREE — local)</option>
+                  <option value="assemblyai">💬 AssemblyAI (paid — cloud)</option>
                 </select>
               </div>
               <div id="groqModelWrap">
                 <label class="auth-label">Groq Model</label>
                 <select id="pc_groq_whisper_model" class="admin-input">
-                  <option value="whisper-large-v3-turbo">whisper-large-v3-turbo (FREE, 228x speed)</option>
-                  <option value="whisper-large-v3">whisper-large-v3 ($0.11/hr, highest accuracy)</option>
+                  <option value="whisper-large-v3">whisper-large-v3 (highest accuracy)</option>
+                  <option value="whisper-large-v3-turbo">whisper-large-v3-turbo (faster)</option>
+                </select>
+              </div>
+              <div id="fasterWhisperModelWrap" style="display:none;">
+                <label class="auth-label">Local Model</label>
+                <select id="pc_faster_whisper_model" class="admin-input">
+                  <option value="base">base (fast, ~1GB VRAM)</option>
+                  <option value="small">small (balanced, ~2GB VRAM)</option>
+                  <option value="medium">medium (accurate, ~5GB VRAM)</option>
+                  <option value="large-v3">large-v3 (best, ~10GB VRAM)</option>
                 </select>
               </div>
             </div>

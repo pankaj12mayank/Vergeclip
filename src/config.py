@@ -108,7 +108,7 @@ except ImportError:
 VIDEOSAILOR_API_KEY = os.environ.get("VIDEOSAILOR_API_KEY", "").strip()
 
 # 2. Transcription Provider & Keys (AssemblyAI or Groq Whisper)
-#    Options: "assemblyai" | "groq" (FREE — whisper-large-v3-turbo)
+#    Options: "assemblyai" | "groq" (FREE — whisper-large-v3)
 #    Get AssemblyAI key at: https://www.assemblyai.com/dashboard/
 #    Get Groq key at: https://console.groq.com/keys
 TRANSCRIPTION_PROVIDER = os.environ.get("TRANSCRIPTION_PROVIDER", "assemblyai").lower().strip()
@@ -621,8 +621,9 @@ def get_all_pipeline_config() -> dict:
     """Return every pipeline setting group — used by admin API."""
     from src.config import get_setting
     return {
-        "transcription_provider": get_setting("transcription_provider", "assemblyai"),
-        "groq_whisper_model": get_setting("groq_whisper_model", "whisper-large-v3-turbo"),
+        "transcription_provider": get_setting("transcription_provider", "groq"),
+        "groq_whisper_model": get_setting("groq_whisper_model", "whisper-large-v3"),
+        "faster_whisper_model": get_setting("faster_whisper_model", "base"),
         "video_specs": get_video_spec_config(),
         "clip_selection": get_clip_selection_config(),
         "scoring_weights": get_scoring_weights(),

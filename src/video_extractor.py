@@ -140,7 +140,7 @@ def _trim_to_duration(
 def _run_ffmpeg(cmd: list[str]) -> None:
     """Run FFmpeg command, raise on failure with full output."""
     log.debug("FFmpeg: %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     if result.returncode != 0:
         raise RuntimeError(
             f"FFmpeg failed (code {result.returncode}).\n"

@@ -19,7 +19,6 @@ Public API:
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 import time
@@ -38,13 +37,16 @@ from src.config import (
     OLLAMA_TIMEOUT,
     OPENAI_API_KEY,
     RANKING_PROVIDER,
+    SEMANTIC_DEFAULT_POOL_SIZE,
+    SEMANTIC_DEFAULT_SEPARATION,
+    SEMANTIC_DEFAULT_TOP_N,
     SEMANTIC_JSON_FILENAME,
+    SEMANTIC_MIN_SCORE,
+    SEMANTIC_REFINE_MAX_DURATION,
+    SEMANTIC_REFINE_MIN_DURATION,
     SEMANTIC_TXT_FILENAME,
     TEMP_DIR,
     TRANSCRIPT_JSON_FILENAME,
-    get_clip_selection_config,
-    get_semantic_ranking_config,
-    get_setting,
 )
 from src.logger import get_logger
 
@@ -116,7 +118,10 @@ def _call_ollama(
     system_prompt: Optional[str] = None,
 ) -> str:
     """Send request to Ollama /api/generate endpoint and return response text."""
-    url = f"{base_url.rstrip('/')}/api/generate"
+    from src.config import get_setting
+    _base_url = base_url or get_setting("OLLAMA_HOST", OLLAMA_BASE_URL)
+    _model = model or get_setting("OLLAMA_MODEL", OLLAMA_DEFAULT_MODEL)
+    url = f"{_base_url.rstrip('/')}/api/generate"
     payload: dict[str, Any] = {
         "model": model,
         "prompt": prompt,
@@ -155,7 +160,8 @@ def _call_openai(
     model: str = "gpt-4o-mini",
 ) -> str:
     """Call OpenAI Chat Completions API and return the response text."""
-    key = os.environ.get("OPENAI_API_KEY", "").strip() or OPENAI_API_KEY
+    from src.config import get_setting
+    key = get_setting("OPENAI_API_KEY", "").strip()
     if not key:
         raise RuntimeError(
             "OPENAI_API_KEY is not set. Add it to your environment or .env file."
@@ -193,16 +199,17 @@ def _call_gemini(
     prompt: str,
     system_prompt: Optional[str] = None,
     model: str = "gemini-3.6-flash",
+    max_tokens: int = 200,
 ) -> str:
     """Call Google Gemini GenerateContent API and return the response text."""
-    key = os.environ.get("GOOGLE_API_KEY", "").strip() or GOOGLE_API_KEY
+    from src.config import get_setting
+    key = get_setting("GOOGLE_API_KEY", "").strip()
     if not key:
         raise RuntimeError(
             "GOOGLE_API_KEY is not set. Add it to your environment or .env file."
         )
     contents = []
     if system_prompt:
-        # Gemini doesn't have a system role via REST — prepend to first user message
         full_prompt = f"{system_prompt}\n\n{prompt}"
     else:
         full_prompt = prompt
@@ -212,7 +219,7 @@ def _call_gemini(
         "contents": contents,
         "generationConfig": {
             "temperature": 0.1,
-            "maxOutputTokens": 200,
+            "maxOutputTokens": max_tokens,
             "responseMimeType": "application/json",
         },
     }).encode("utf-8")
@@ -240,16 +247,15 @@ def _call_openai_compatible(
     model: Optional[str] = None,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    max_tokens: int = 200,
 ) -> str:
     """Call any OpenAI-compatible custom LLM endpoint (Groq, DeepSeek, OpenRouter, vLLM, LMStudio, etc.)."""
-    endpoint = (base_url or os.environ.get("CUSTOM_AI_BASE_URL") or "https://api.openai.com/v1").rstrip("/") + "/chat/completions"
-    key = api_key or os.environ.get("CUSTOM_AI_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
-    target_model = model or os.environ.get("CUSTOM_AI_MODEL") or "gpt-4o-mini"
+    from src.config import get_setting
+    endpoint = (base_url or get_setting("CUSTOM_AI_BASE_URL", "") or "https://api.openai.com/v1").rstrip("/") + "/chat/completions"
+    key = api_key or get_setting("CUSTOM_AI_API_KEY", "") or get_setting("OPENAI_API_KEY", "") or ""
+    target_model = model or get_setting("CUSTOM_AI_MODEL", "") or "gpt-4o-mini"
     
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "Vergeclip/1.0 (OpenAI-Compatible Client)",
-    }
+    headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
 
@@ -258,14 +264,13 @@ def _call_openai_compatible(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
 
-    payload_dict = {
+    payload = json.dumps({
         "model": target_model,
         "messages": messages,
         "temperature": 0.1,
-        "response_format": {"type": "json_object"},
-    }
-
-    payload = json.dumps(payload_dict).encode("utf-8")
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"}
+    }).encode("utf-8")
 
     req = urllib.request.Request(endpoint, data=payload, headers=headers)
     try:
@@ -273,16 +278,7 @@ def _call_openai_compatible(
             body = json.loads(resp.read().decode("utf-8"))
             return body["choices"][0]["message"]["content"].strip()
     except urllib.error.HTTPError as exc:
-        err_body = exc.read().decode("utf-8", errors="replace")
-        # Some providers (Groq) reject response_format — retry without it
-        if exc.code in (400, 422) and "response_format" in err_body.lower():
-            payload_dict.pop("response_format", None)
-            payload2 = json.dumps(payload_dict).encode("utf-8")
-            req2 = urllib.request.Request(endpoint, data=payload2, headers=headers)
-            with urllib.request.urlopen(req2, timeout=45) as resp2:
-                body2 = json.loads(resp2.read().decode("utf-8"))
-                return body2["choices"][0]["message"]["content"].strip()
-        raise RuntimeError(f"Custom AI endpoint error ({exc.code}): {err_body}") from exc
+        raise RuntimeError(f"Custom AI endpoint error ({exc.code}): {exc.read().decode('utf-8')}") from exc
 
 
 def _call_llm(
@@ -291,22 +287,25 @@ def _call_llm(
     model: Optional[str] = None,
     base_url: Optional[str] = None,
     provider: Optional[str] = None,
+    max_tokens: int = 200,
 ) -> str:
     """
     Unified LLM caller — routes to the provider set in RANKING_PROVIDER.
     Supported: "gemini" | "openai" | "custom_openai" | "ollama"
     """
-    active_prov = (provider or os.environ.get("RANKING_PROVIDER") or RANKING_PROVIDER or "gemini").lower().strip()
+    from src.config import get_setting
+    active_prov = (provider or get_setting("RANKING_PROVIDER", "") or RANKING_PROVIDER or "gemini").lower().strip()
     
     if active_prov in ("custom", "custom_openai", "custom_openai_compatible", "deepseek", "groq", "openrouter"):
         return _call_openai_compatible(
             prompt,
             system_prompt=system_prompt,
-            model=model or os.environ.get("CUSTOM_AI_MODEL"),
-            base_url=base_url or os.environ.get("CUSTOM_AI_BASE_URL"),
-            api_key=os.environ.get("CUSTOM_AI_API_KEY")
+            model=model or get_setting("CUSTOM_AI_MODEL", ""),
+            base_url=base_url or get_setting("CUSTOM_AI_BASE_URL", ""),
+            api_key=get_setting("CUSTOM_AI_API_KEY", ""),
+            max_tokens=max_tokens,
         )
-    elif active_prov == "openai" or (os.environ.get("OPENAI_API_KEY") and not os.environ.get("GOOGLE_API_KEY")):
+    elif active_prov == "openai" or (get_setting("OPENAI_API_KEY", "") and not get_setting("GOOGLE_API_KEY", "")):
         target_model = model if (model and "gpt" in model) else "gpt-4o-mini"
         return _call_openai(prompt, system_prompt=system_prompt, model=target_model)
     elif active_prov == "ollama":
@@ -314,12 +313,12 @@ def _call_llm(
         return _call_ollama(
             prompt,
             model=target_model,
-            base_url=base_url or os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+            base_url=base_url or get_setting("OLLAMA_HOST", "http://localhost:11434"),
             system_prompt=system_prompt,
         )
     else:  # default: gemini
-        target_model = model if (model and "gemini" in model) else os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
-        return _call_gemini(prompt, system_prompt=system_prompt, model=target_model)
+        target_model = model if (model and "gemini" in model) else "gemini-3.6-flash"
+        return _call_gemini(prompt, system_prompt=system_prompt, model=target_model, max_tokens=max_tokens)
 
 
 def _extract_json_response(raw_text: str) -> Optional[dict]:
@@ -423,18 +422,18 @@ _RE_SENTENCE_END = re.compile(r"[.!?]['\"]?\s*$")
 def refine_candidate_boundaries(
     candidate: dict,
     segments: list[dict],
-    min_dur: float = None,
-    max_dur: float = None,
+    min_dur: float = SEMANTIC_REFINE_MIN_DURATION,
+    max_dur: float = SEMANTIC_REFINE_MAX_DURATION,
 ) -> dict:
     """
     Inspect surrounding transcript and adjust start/end timestamps to nearby
     sentence boundaries strictly adhering to [min_dur, max_dur] (e.g. 15.0s - 20.0s).
+
+    1. If a clip starts with a short fragment or connector ('Why?', 'How?', 'Well', 'So'),
+       attempts to shift the start backward to include the setup question only if duration <= max_dur.
+    2. If duration exceeds max_dur, trims backward to the best sentence boundary within [min_dur, max_dur].
+    3. Never reduces duration below min_dur.
     """
-    _cfg = get_clip_selection_config()
-    if min_dur is None:
-        min_dur = _cfg["clip_min_duration"]
-    if max_dur is None:
-        max_dur = _cfg["clip_max_duration"]
     c_start = float(candidate.get("start", 0.0))
     c_end = float(candidate.get("end", 0.0))
 
@@ -565,7 +564,7 @@ def _extract_surrounding_context(
 # Candidate LLM Evaluation
 # ─────────────────────────────────────────────────────────────────────────────
 
-_DEFAULT_SYSTEM_PROMPT = """You are an elite short-form video editor evaluating candidate clips (15-25 seconds) from a long-form podcast for YouTube Shorts, Instagram Reels, and TikTok.
+SYSTEM_PROMPT = """You are an elite short-form video editor evaluating candidate clips (15-25 seconds) from a long-form podcast for YouTube Shorts, Instagram Reels, and TikTok.
 
 EVALUATION GOAL:
 Determine if this clip will perform exceptionally well as a standalone viral short. The final clip must be understandable and compelling on its own without requiring the viewer to have seen the previous conversation.
@@ -604,12 +603,6 @@ You must respond ONLY with a strict JSON object:
 }"""
 
 
-def _get_system_prompt() -> str:
-    """Return the active SYSTEM_PROMPT from DB, falling back to hardcoded default."""
-    val = get_setting("pipeline_system_prompt", None)
-    return val if val else _DEFAULT_SYSTEM_PROMPT
-
-
 def _evaluate_single_candidate(
     candidate_text: str,
     pre_context: str,
@@ -637,11 +630,12 @@ Analyze the CANDIDATE CLIP and provide your ratings in strict JSON format."""
             prompt=prompt,
             model=model,
             base_url=base_url,
-            system_prompt=_get_system_prompt(),
+            system_prompt=SYSTEM_PROMPT,
         )
         parsed = _extract_json_response(raw_resp)
     except Exception as exc:
-        log.warning("LLM call failed (%s provider): %s", RANKING_PROVIDER, exc)
+        from src.config import get_setting as _gs
+        log.warning("LLM call failed (%s provider): %s", (_gs("RANKING_PROVIDER", "") or "unknown"), exc)
         parsed = None
 
     # Retry once if parsing failed
@@ -656,7 +650,7 @@ Analyze the CANDIDATE CLIP and provide your ratings in strict JSON format."""
                 prompt=retry_prompt,
                 model=model,
                 base_url=base_url,
-                system_prompt=_get_system_prompt(),
+                system_prompt=SYSTEM_PROMPT,
             )
             parsed = _extract_json_response(raw_resp)
         except Exception:
@@ -845,10 +839,10 @@ def run_semantic_ranking(
     *,
     model: str = OLLAMA_DEFAULT_MODEL,
     base_url: str = OLLAMA_BASE_URL,
-    semantic_pool_size: int = None,
-    top_n: int = None,
-    min_score: float = None,
-    min_separation: float = None,
+    semantic_pool_size: int = SEMANTIC_DEFAULT_POOL_SIZE,
+    top_n: int = SEMANTIC_DEFAULT_TOP_N,
+    min_score: float = SEMANTIC_MIN_SCORE,
+    min_separation: float = SEMANTIC_DEFAULT_SEPARATION,
     json_out: Optional[Path] = None,
     txt_out: Optional[Path] = None,
 ) -> dict:
@@ -862,15 +856,6 @@ def run_semantic_ranking(
     5. Applies diversity timeline distribution.
     6. Saves semantic_candidates.json & semantic_candidates.txt.
     """
-    _cfg = get_semantic_ranking_config()
-    if semantic_pool_size is None:
-        semantic_pool_size = _cfg["semantic_default_pool_size"]
-    if top_n is None:
-        top_n = _cfg["semantic_default_top_n"]
-    if min_score is None:
-        min_score = _cfg["semantic_min_score"]
-    if min_separation is None:
-        min_separation = _cfg["semantic_default_separation"]
     # 1. Resolve paths
     cand_path = candidates_path or (TEMP_DIR / CANDIDATE_POOL_JSON_FILENAME)
     if not cand_path.exists():
@@ -905,10 +890,9 @@ def run_semantic_ranking(
     log.info("Loaded candidate pool of %d candidates from %s", total_pool_count, cand_path.name)
 
     # 2. Boundary Refinement Stage
-    _clip_cfg = get_clip_selection_config()
     print(f"\n  [1/3] Applying sentence-boundary refinement (target 15-25s) …")
     refined_candidates = [
-        refine_candidate_boundaries(c, segments, _clip_cfg["clip_min_duration"], _clip_cfg["clip_max_duration"])
+        refine_candidate_boundaries(c, segments, SEMANTIC_REFINE_MIN_DURATION, SEMANTIC_REFINE_MAX_DURATION)
         for c in raw_candidates
     ]
 
@@ -968,11 +952,15 @@ def run_semantic_ranking(
                 )
             )
     else:
-        provider_label = RANKING_PROVIDER.upper()
-        if RANKING_PROVIDER == "openai":
+        from src.config import get_setting
+        _active_ranking_provider = (get_setting("RANKING_PROVIDER", "") or RANKING_PROVIDER or "gemini").lower()
+        provider_label = _active_ranking_provider.upper()
+        if _active_ranking_provider == "openai":
             provider_label = "OpenAI (gpt-4o-mini)"
-        elif RANKING_PROVIDER == "gemini":
+        elif _active_ranking_provider == "gemini":
             provider_label = "Google Gemini (gemini-3.6-flash)"
+        elif _active_ranking_provider in ("custom", "custom_openai", "deepseek", "groq", "openrouter"):
+            provider_label = f"Custom AI ({get_setting('CUSTOM_AI_MODEL', 'custom')})"
         else:
             provider_label = f"Ollama '{model}' at {base_url}"
         print(f"  [3/3] Running fast LLM evaluation via {provider_label} …\n")

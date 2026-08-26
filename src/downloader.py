@@ -7,7 +7,6 @@ Automatically selects VideoSailor API or yt-dlp high-speed fallback with real-ti
 
 from __future__ import annotations
 
-import concurrent.futures
 import json
 import os
 import re
@@ -16,7 +15,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional, Callable
 
-from src.config import INPUT_DIR, VIDEOSAILOR_API_KEY
+from src.config import INPUT_DIR, VIDEOSAILOR_API_KEY, get_setting
 from src.logger import get_logger, log_system_event
 
 log = get_logger(__name__)
@@ -47,20 +46,22 @@ def _extract_video_id(url: str) -> str:
 def download_via_ytdlp(url: str, output_dir: Path, progress_cb: Optional[Callable[[str, int], None]] = None) -> Path:
     """
     Download video via yt-dlp with progress reporting.
-    High-speed, automatic 1080p/720p stream selection and fallback.
+    Uses single-stream MP4 format to avoid silent ffmpeg merge hangs.
     """
     import yt_dlp
+    import threading
 
     video_id = _extract_video_id(url)
     dest_template = str(output_dir / f"{video_id}.%(ext)s")
     target_mp4 = output_dir / f"{video_id}.mp4"
 
-    log.info("[yt-dlp] Starting high-speed stream download for: %s", url)
+    log.info("[yt-dlp] Starting stream download for: %s", url)
     if progress_cb:
-        progress_cb(f"📥 Connecting to YouTube media stream via yt-dlp...", 10)
+        progress_cb("📥 Connecting to YouTube media stream via yt-dlp...", 10)
 
     def _ytdl_hook(d):
-        if d.get("status") == "downloading":
+        status = d.get("status")
+        if status == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
             downloaded = d.get("downloaded_bytes") or 0
             if total > 0:
@@ -68,12 +69,14 @@ def download_via_ytdlp(url: str, output_dir: Path, progress_cb: Optional[Callabl
                 msg = f"📥 Downloading video stream: {pct}% ({downloaded / 1024 / 1024:.1f}MB / {total / 1024 / 1024:.1f}MB)"
                 if progress_cb:
                     progress_cb(msg, min(25, 10 + int(pct * 0.15)))
-        elif d.get("status") == "finished":
+        elif status == "finished":
+            fn = d.get("filename", "stream")
+            log.info("[yt-dlp] Stream finished: %s", fn)
             if progress_cb:
-                progress_cb("✓ Download stream completed, remuxing MP4...", 25)
+                progress_cb(f"✓ Stream downloaded, processing...", 24)
 
     ydl_opts = {
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "format": "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio/best",
         "outtmpl": dest_template,
         "merge_output_format": "mp4",
         "quiet": True,
@@ -82,15 +85,13 @@ def download_via_ytdlp(url: str, output_dir: Path, progress_cb: Optional[Callabl
         "nocheckcertificate": True,
         "ignoreerrors": False,
         "socket_timeout": 30,
+        "noplaylist": True,
     }
 
-    # Pass ffmpeg location to yt-dlp so it can merge video+audio
     from src.config import FFMPEG_BIN
     import os as _os, shutil as _shutil
     if _os.path.isfile(FFMPEG_BIN):
         ffmpeg_dir = _os.path.dirname(FFMPEG_BIN)
-        # imageio-ffmpeg names binary differently (ffmpeg-win-x86_64-v7.1.exe)
-        # yt-dlp looks for 'ffmpeg.exe' in the dir — create a symlink if needed
         ffmpeg_link = _os.path.join(ffmpeg_dir, "ffmpeg.exe")
         if not _os.path.exists(ffmpeg_link):
             try:
@@ -99,34 +100,47 @@ def download_via_ytdlp(url: str, output_dir: Path, progress_cb: Optional[Callabl
                 pass
         ydl_opts["ffmpeg_location"] = ffmpeg_dir
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    _download_error = [None]
+    _download_done = threading.Event()
+
+    def _run_download():
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(ydl.download, [url])
-                try:
-                    future.result(timeout=600)  # 10 minute total timeout including merge
-                except concurrent.futures.TimeoutError:
-                    log.error("[yt-dlp] Download timed out after 10 minutes")
-                    raise RuntimeError("Video download timed out (10 min limit)")
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
         except Exception as e:
-            log.error("[yt-dlp] Download failed: %s", e)
-            raise RuntimeError(f"Failed to download video from YouTube: {e}")
+            _download_error[0] = e
+        finally:
+            _download_done.set()
+
+    dl_thread = threading.Thread(target=_run_download, daemon=True, name="ytdl-download")
+    dl_thread.start()
+
+    if progress_cb:
+        progress_cb("📥 Downloading video stream...", 12)
+
+    if not _download_done.wait(timeout=600):
+        log.error("[yt-dlp] Download timed out after 10 minutes — thread killed")
+        if progress_cb:
+            progress_cb("⚠️ Download timed out, aborting...", 12)
+        raise RuntimeError("Video download timed out after 10 minutes")
+
+    if _download_error[0]:
+        log.error("[yt-dlp] Download failed: %s", _download_error[0])
+        raise RuntimeError(f"Failed to download video from YouTube: {_download_error[0]}")
 
     if progress_cb:
         progress_cb("✓ Download complete, finalizing...", 25)
 
-    # Find the resulting file
     if target_mp4.exists():
-        log.info("[yt-dlp] Video successfully saved to %s (%.2f MB)", target_mp4.name, target_mp4.stat().st_size / (1024 * 1024))
+        log.info("[yt-dlp] Video saved to %s (%.2f MB)", target_mp4.name, target_mp4.stat().st_size / (1024 * 1024))
         return target_mp4
 
-    # Look for any matching extension
     for cand in output_dir.glob(f"{video_id}.*"):
         if cand.is_file() and cand.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}:
             log.info("[yt-dlp] Video saved as %s", cand.name)
             return cand
 
-    raise RuntimeError("yt-dlp finished download but target video file was not found in directory.")
+    raise RuntimeError("yt-dlp finished download but target video file was not found.")
 
 
 def download_via_videosailor(url: str, output_dir: Path, api_key: str, progress_cb: Optional[Callable[[str, int], None]] = None) -> Path:
@@ -193,7 +207,7 @@ def download_video(url: str, output_dir: Optional[Path] = None, progress_cb: Opt
     dest_dir = output_dir or INPUT_DIR
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    api_key = VIDEOSAILOR_API_KEY or os.environ.get("VIDEOSAILOR_API_KEY", "").strip()
+    api_key = VIDEOSAILOR_API_KEY or get_setting("VIDEOSAILOR_API_KEY", "")
 
     # Try VideoSailor first if key is configured
     if api_key:

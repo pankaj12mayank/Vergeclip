@@ -62,7 +62,7 @@ def _run_ffprobe_inspect(video_path: Path) -> dict:
             "-print_format", "json",
             str(video_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode == 0:
             try:
                 return json.loads(result.stdout)

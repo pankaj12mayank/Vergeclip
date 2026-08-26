@@ -175,6 +175,7 @@ def inspect_video(path: Path) -> VideoInfo:
             text=True,
             encoding="utf-8",
             check=True,
+            timeout=30,
         )
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(

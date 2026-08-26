@@ -50,12 +50,19 @@ from src.config import (
     CANDIDATE_POOL_JSON_FILENAME,
     CANDIDATES_JSON_FILENAME,
     CANDIDATES_TXT_FILENAME,
+    CLIP_DISTRIBUTION_STRATEGY,
+    CLIP_MAX_DURATION,
+    CLIP_MIN_DURATION,
+    CLIP_MIN_SCORE,
+    CLIP_MIN_SEPARATION,
+    CLIP_OVERLAP_THRESHOLD,
+    CLIP_STEP_SIZE,
+    CLIP_TOP_N,
     FFMPEG_BIN,
     INPUT_DIR,
+    SCORING_WEIGHTS,
     TEMP_DIR,
     TRANSCRIPT_JSON_FILENAME,
-    get_clip_selection_config,
-    get_scoring_weights,
 )
 from src.logger import get_logger
 
@@ -403,7 +410,7 @@ def score_candidate(clip: CandidateClip, weights: Optional[dict] = None) -> tupl
     Evaluate candidate clip with comprehensive heuristic signals.
     Returns (score, reasons).
     """
-    w = weights or get_scoring_weights()
+    w = weights or SCORING_WEIGHTS
     score = 0.0
     reasons: list[str] = []
 
@@ -782,24 +789,13 @@ def _load_transcript(path: Path) -> tuple[list[TranscriptSegment], dict]:
 def _generate_energy_based_candidates(
     meta: dict,
     total_duration: float,
-    min_dur: float = None,
-    max_dur: float = None,
-    top_n: int = None,
-    min_separation: float = None,
-    overlap_threshold: float = None,
+    min_dur: float = CLIP_MIN_DURATION,
+    max_dur: float = CLIP_MAX_DURATION,
+    top_n: int = CLIP_TOP_N,
+    min_separation: float = CLIP_MIN_SEPARATION,
+    overlap_threshold: float = CLIP_OVERLAP_THRESHOLD,
     target_dur: float = 20.0,
 ) -> tuple[list[ScoredClip], list[ScoredClip]]:
-    _cfg = get_clip_selection_config()
-    if min_dur is None:
-        min_dur = _cfg["clip_min_duration"]
-    if max_dur is None:
-        max_dur = _cfg["clip_max_duration"]
-    if top_n is None:
-        top_n = _cfg["clip_top_n"]
-    if min_separation is None:
-        min_separation = _cfg["clip_min_separation"]
-    if overlap_threshold is None:
-        overlap_threshold = _cfg["clip_overlap_threshold"]
     """
     Generate candidate clips from audio-energy peaks and scene dynamics for videos
     without spoken dialogue (fight scenes, music videos, action compilations, trailers).
@@ -950,14 +946,14 @@ def _generate_energy_based_candidates(
 def run_selection(
     transcript_path: Optional[Path] = None,
     *,
-    min_dur: float = None,
-    max_dur: float = None,
-    step: float = None,
-    top_n: int = None,
-    min_score: float = None,
-    min_separation: float = None,
-    overlap_threshold: float = None,
-    strategy: str = None,
+    min_dur: float = CLIP_MIN_DURATION,
+    max_dur: float = CLIP_MAX_DURATION,
+    step: float = CLIP_STEP_SIZE,
+    top_n: int = CLIP_TOP_N,
+    min_score: float = CLIP_MIN_SCORE,
+    min_separation: float = CLIP_MIN_SEPARATION,
+    overlap_threshold: float = CLIP_OVERLAP_THRESHOLD,
+    strategy: str = CLIP_DISTRIBUTION_STRATEGY,
     weights: Optional[dict] = None,
     json_out: Optional[Path] = None,
     txt_out: Optional[Path] = None,
@@ -966,23 +962,6 @@ def run_selection(
     Run Phase 3 Clip Selection Pipeline.
     Supports conversational podcasts and non-dialogue / action / fight / music videos.
     """
-    _cfg = get_clip_selection_config()
-    if min_dur is None:
-        min_dur = _cfg["clip_min_duration"]
-    if max_dur is None:
-        max_dur = _cfg["clip_max_duration"]
-    if step is None:
-        step = _cfg["clip_step_size"]
-    if top_n is None:
-        top_n = _cfg["clip_top_n"]
-    if min_score is None:
-        min_score = _cfg["clip_min_score"]
-    if min_separation is None:
-        min_separation = _cfg["clip_min_separation"]
-    if overlap_threshold is None:
-        overlap_threshold = _cfg["clip_overlap_threshold"]
-    if strategy is None:
-        strategy = _cfg["clip_distribution_strategy"]
     t_path = transcript_path or (TEMP_DIR / TRANSCRIPT_JSON_FILENAME)
     segments, meta = _load_transcript(t_path)
     total_duration = float(meta.get("duration_secs", segments[-1].end if segments else 0.0))
