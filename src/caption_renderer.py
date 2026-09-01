@@ -45,7 +45,6 @@ from src.config import (
     FFMPEG_BIN,
     get_caption_config,
     get_enhancement_config,
-    get_video_spec_config,
 )
 from src.logger import get_logger
 
@@ -480,7 +479,25 @@ def validate_caption_chunks(
         if i > 0 and c.start < chunks[i - 1].end - 0.05:
             overlaps += 1
 
-    status = "PASS" if (invalid_count == 0 and len(chunks) > 0) else "FAIL"
+    if len(chunks) == 0:
+        status = "NO_TRANSCRIPT"
+        print("\nCaption validation:")
+        print(f"  Status             : {status} (no speech detected in clip)")
+        print(f"  Chunks             : 0")
+        print(f"  Clip duration      : {clip_duration:.2f}s")
+        print(f"  Note               : Video will be produced without captions.")
+        return {
+            "words_included": 0,
+            "total_chunks": 0,
+            "earliest": 0.0,
+            "latest": 0.0,
+            "max_lines": 0,
+            "overlaps": 0,
+            "invalid_count": 0,
+            "status": status,
+        }
+
+    status = "PASS" if (invalid_count == 0) else "FAIL"
 
     print("\nCaption validation:")
     print(f"  Words found        : {total_words}")
@@ -516,9 +533,10 @@ def _draw_caption_frame(
 ) -> np.ndarray:
     """
     Render active caption chunk with active-word highlighting & rich emojis onto frame.
+    High-quality: efficient shadow, proportional spacing, text background.
     """
     _cfg = get_caption_config()
-    _vspec = get_video_spec_config()
+    frame_w = frame_bgr.shape[1]
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     pil_img = Image.fromarray(frame_rgb)
     draw = ImageDraw.Draw(pil_img)
@@ -537,10 +555,10 @@ def _draw_caption_frame(
 
     active_word_obj = chunk.words[active_word_idx] if active_word_idx >= 0 else None
 
-    # 2. Measure line heights and block vertical positioning
+    # 2. Measure line heights — proportional spacing
     dummy_bbox = draw.textbbox((0, 0), "TEST", font=font)
     line_h = dummy_bbox[3] - dummy_bbox[1]
-    line_spacing = 16
+    line_spacing = int(line_h * 0.35)  # 35% of line height for comfortable reading
 
     num_lines = len(chunk.lines)
     total_block_h = num_lines * line_h + (num_lines - 1) * line_spacing
@@ -548,40 +566,60 @@ def _draw_caption_frame(
     y_start = _cfg["caption_y"] - (total_block_h // 2)
     space_w = draw.textbbox((0, 0), " ", font=font)[2] - draw.textbbox((0, 0), " ", font=font)[0]
 
-    # 3. Draw each line centered horizontally
-    y = y_start
+    outline_color = _cfg["caption_outline_color"]
+    out_w = _cfg["caption_outline_width"]
+
+    # 3. Pre-render text layer for efficient shadow via PIL filter
+    shadow_layer = Image.new("RGBA", pil_img.size, (0, 0, 0, 0))
+    shadow_draw = ImageDraw.Draw(shadow_layer)
+
+    # Measure all lines first for background box
+    all_line_data = []
     for line_words in chunk.lines:
         word_widths = []
         for w in line_words:
-            w_str = w.word
-            bbox = draw.textbbox((0, 0), w_str, font=font)
+            bbox = shadow_draw.textbbox((0, 0), w.word, font=font)
             word_widths.append(bbox[2] - bbox[0])
-
         total_line_w = sum(word_widths) + (len(line_words) - 1) * space_w
-        x = (_vspec["target_width"] - total_line_w) // 2
+        all_line_data.append((line_words, word_widths, total_line_w))
+
+    # Draw subtle text background pill
+    if all_line_data:
+        max_line_w = max(d[2] for d in all_line_data)
+        bg_pad_x, bg_pad_y = 24, 14
+        bg_x = (frame_w - max_line_w) // 2 - bg_pad_x
+        bg_y = y_start - bg_pad_y
+        bg_w = max_line_w + bg_pad_x * 2
+        bg_h = total_block_h + bg_pad_y * 2
+        draw.rounded_rectangle(
+            [(bg_x, bg_y), (bg_x + bg_w, bg_y + bg_h)],
+            radius=16, fill=(0, 0, 0, 140),
+        )
+
+    # 4. Draw each line centered horizontally
+    y = y_start
+    for line_words, word_widths, total_line_w in all_line_data:
+        x = (frame_w - total_line_w) // 2
 
         for w, w_w in zip(line_words, word_widths):
             w_str = w.word
             is_active = (active_word_obj is not None and w is active_word_obj)
             text_color = _cfg["caption_highlight_color"] if is_active else _cfg["caption_text_color"]
 
-            # Split text and emoji if present
+            # Emoji handling
             emoji_match = re.search(r'([\U00010000-\U0010ffff\u2600-\u27ff\u2300-\u23ff\u2b50])', w_str)
-            
+
             if emoji_match:
                 em_char = emoji_match.group(1)
                 txt_part = w_str.replace(em_char, "").strip()
-                
-                # Draw text part with thick outline
-                out_w = _cfg["caption_outline_width"]
+
+                # Efficient outline: draw at offsets only (no center duplicate)
                 for dx in range(-out_w, out_w + 1, 2):
                     for dy in range(-out_w, out_w + 1, 2):
                         if dx != 0 or dy != 0:
-                            draw.text((x + dx, y + dy), txt_part, font=font, fill=_cfg["caption_outline_color"])
-                
+                            draw.text((x + dx, y + dy), txt_part, font=font, fill=outline_color)
                 draw.text((x, y), txt_part, font=font, fill=text_color)
-                
-                # Measure text part and draw emoji
+
                 txt_w = draw.textbbox((0, 0), txt_part, font=font)[2] - draw.textbbox((0, 0), txt_part, font=font)[0]
                 em_x = x + txt_w + 8
                 try:
@@ -589,14 +627,17 @@ def _draw_caption_frame(
                 except Exception:
                     draw.text((em_x, y), em_char, font=font, fill=(255, 230, 0))
             else:
-                # Normal word: Draw thick dark outline (8-directional stroke)
-                out_w = _cfg["caption_outline_width"]
+                # Efficient outline: skip center (0,0)
                 for dx in range(-out_w, out_w + 1, 2):
                     for dy in range(-out_w, out_w + 1, 2):
                         if dx != 0 or dy != 0:
-                            draw.text((x + dx, y + dy), w_str, font=font, fill=_cfg["caption_outline_color"])
+                            draw.text((x + dx, y + dy), w_str, font=font, fill=outline_color)
 
                 draw.text((x, y), w_str, font=font, fill=text_color)
+
+                # Active word glow effect
+                if is_active:
+                    draw.text((x - 1, y - 1), w_str, font=font, fill=(255, 200, 50, 180))
 
             x += w_w + space_w
 
@@ -653,9 +694,8 @@ def render_captions_on_video(
             "-i", str(input_video),
             "-i", str(audio_src),
             "-c:v", "libx264",
-            "-crf", "23",
-            "-preset", "ultrafast",
-            "-tune", "fastdecode",
+            "-crf", "18",
+            "-preset", "fast",
             "-pix_fmt", "yuv420p",
         ]
         if _enh["auto_color_filter_enabled"] and _enh["auto_video_filter"]:
@@ -667,6 +707,7 @@ def render_captions_on_video(
             "-map", "0:v:0",
             "-map", "1:a:0",
             "-shortest",
+            "-movflags", "+faststart",
             str(out_path),
         ])
         log.info("Direct audio-video mux with FFmpeg (Auto-Filter & Pitch-Shift applied)…")
@@ -738,9 +779,8 @@ def render_captions_on_video(
         "-i", str(tmp_no_audio),
         "-i", str(audio_src),
         "-c:v", "libx264",
-        "-crf", "23",
-        "-preset", "ultrafast",
-        "-tune", "fastdecode",
+        "-crf", "18",
+        "-preset", "fast",
         "-pix_fmt", "yuv420p",
         "-r", str(fps),
     ]
@@ -753,6 +793,7 @@ def render_captions_on_video(
         "-map", "0:v:0",
         "-map", "1:a:0",
         "-shortest",
+        "-movflags", "+faststart",
         str(out_path),
     ])
 

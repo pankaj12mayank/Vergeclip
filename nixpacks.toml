@@ -1,10 +1,25 @@
-# Nixpacks configuration for Railway / Render / PaaS deployments
+# Nixpacks configuration for Railway / Render (Non-Docker) / PaaS deployments.
+# Installs system FFmpeg, then Python deps from requirements.txt, then starts server.py.
 [phases.setup]
 nixPkgs = ["python311", "ffmpeg", "curl"]
 
 [phases.install]
-cmds = ["python -m pip install --upgrade pip", "pip install -r requirements.txt"]
+cmds = [
+  "python -m pip install --upgrade pip",
+  "pip install -r requirements.txt",
+]
+
+[phases.build]
+cmds = [
+  "mkdir -p input output temp logs data storage",
+]
 
 [start]
 cmd = "python server.py --host 0.0.0.0 --port $PORT"
-# FastAPI docs at /docs, health at /health, auth at /api/auth/*
+
+[env]
+PYTHONUNBUFFERED = "1"
+HOST = "0.0.0.0"
+# Set in the platform dashboard (never committed):
+#   JWT_SECRET_KEY, VIDEOSAILOR_API_KEY, GROQ_API_KEY,
+#   ASSEMBLYAI_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY, AUTH_REQUIRED

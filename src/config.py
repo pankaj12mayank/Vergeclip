@@ -148,6 +148,7 @@ def get_all_api_config() -> dict:
         },
         "free_tier_monthly_limit": get_setting("FREE_TIER_MONTHLY_LIMIT", "5"),
         "max_video_duration_minutes": get_setting("MAX_VIDEO_DURATION_MINUTES", "90"),
+        "max_shorts_per_video": get_setting("MAX_SHORTS_PER_VIDEO", ""),
         "storage_path": get_setting("STORAGE_PATH", "./storage"),
     }
 
@@ -376,18 +377,18 @@ SEMANTIC_JSON_FILENAME = "semantic_candidates.json"
 SEMANTIC_TXT_FILENAME  = "semantic_candidates.txt"
 
 # ── Phase 5: Caption Settings ────────────────────────────────────────────────
-CAPTION_FONT_SIZE = 82
+CAPTION_FONT_SIZE = 86
 CAPTION_MAX_WORDS = 5
 CAPTION_MIN_WORDS = 2
 CAPTION_MAX_LINES = 2
-CAPTION_MAX_WIDTH = 900
+CAPTION_MAX_WIDTH = 920
 CAPTION_Y = 1450
 
 # Colors (R, G, B)
 CAPTION_TEXT_COLOR = (255, 255, 255)         # White
-CAPTION_HIGHLIGHT_COLOR = (255, 230, 0)      # Yellow
-CAPTION_OUTLINE_COLOR = (0, 0, 0)            # Black
-CAPTION_OUTLINE_WIDTH = 6
+CAPTION_HIGHLIGHT_COLOR = (255, 210, 40)     # Bright gold (more vibrant)
+CAPTION_OUTLINE_COLOR = (10, 10, 10)         # Near-black (softer than pure black)
+CAPTION_OUTLINE_WIDTH = 7                     # Thicker for better readability on any background
 
 CAPTION_START_PADDING = 0.0
 CAPTION_END_PADDING = 0.05
@@ -398,7 +399,7 @@ CAPTION_MIN_DURATION = 0.4
 # ── Automatic Video Enhancement & Audio Polish Settings ──────────────────────
 # Subtle color vibrance + contrast + light unsharp sharpening applied automatically to all shorts
 AUTO_COLOR_FILTER_ENABLED = True
-AUTO_VIDEO_FILTER = "eq=contrast=1.06:saturation=1.12:brightness=0.01,unsharp=5:5:0.35:3:3:0.0"
+AUTO_VIDEO_FILTER = "eq=contrast=1.08:saturation=1.15:brightness=0.015,unsharp=5:5:0.5:3:3:0.0"
 
 # Subtle audio pitch adjustment (+0.5 semitones) for crisp, punchy voice presence
 AUTO_PITCH_SHIFT_ENABLED = True
@@ -547,6 +548,7 @@ def get_video_spec_config() -> dict:
         "target_fps": get_setting_int("target_fps", TARGET_FPS),
         "max_short_duration": get_setting_int("max_short_duration", MAX_SHORT_DURATION),
         "min_short_duration": get_setting_int("min_short_duration", MIN_SHORT_DURATION),
+        "timezone": get_setting("timezone", "Asia/Kolkata"),
     }
 
 
@@ -630,5 +632,10 @@ def get_all_pipeline_config() -> dict:
         "captions": get_caption_config(),
         "enhancement": get_enhancement_config(),
         "semantic_ranking": get_semantic_ranking_config(),
+        "video_gen_provider": get_setting("video_gen_provider", ""),
+        "pollinations_api_key": get_setting("pollinations_api_key", ""),
+        "agnes_api_key": get_setting("agnes_api_key", ""),
+        "comfyui_url": get_setting("comfyui_url", "http://127.0.0.1:8188"),
+        "timezone": get_setting("timezone", "Asia/Kolkata"),
     }
 

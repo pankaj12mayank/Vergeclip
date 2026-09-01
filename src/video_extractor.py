@@ -183,16 +183,18 @@ def extract_clip(
     cmd = [
         FFMPEG_BIN,
         "-y",
-        "-ss", f"{pre_seek:.3f}",        # fast container seek to nearby keyframe
+        "-ss", f"{pre_seek:.3f}",
         "-i", str(source_video),
-        "-ss", f"{in_seek:.3f}",         # exact frame/audio decode seek
-        "-t", f"{duration:.3f}",         # exact cut duration
+        "-ss", f"{in_seek:.3f}",
+        "-t", f"{duration:.3f}",
         "-c:v", "libx264",
         "-crf", "18",
-        "-preset", "ultrafast",
+        "-preset", "fast",
+        "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", "192k",
         "-avoid_negative_ts", "make_zero",
+        "-movflags", "+faststart",
         str(out_path),
     ]
     log.info("Extracting clip: %s -> %s (%.2fs)", _fmt_ts(start), _fmt_ts(end), duration)

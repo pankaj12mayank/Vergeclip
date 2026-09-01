@@ -19,8 +19,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
-
 from src.config import FFMPEG_BIN, get_video_spec_config
 from src.face_tracker import FaceBox, FrameData
 from src.logger import get_logger
@@ -265,6 +263,8 @@ def render_reframed_video(
 
     last_crop = crop_plan[0] if crop_plan else CropWindow(0, 0, 0, 0, src_w, src_h)
 
+    out_w, out_h = _get_out_w(), _get_out_h()
+
     frame_idx = 0
     while True:
         ret, frame = cap.read()
@@ -293,8 +293,12 @@ def render_reframed_video(
                 max(0, cx - cw_ // 2): min(src_w, cx + cw_ // 2),
             ]
 
-        resized = cv2.resize(cropped, (_get_out_w(), _get_out_h()), interpolation=cv2.INTER_LINEAR)
-        writer.write(resized)
+        # Cover-fill: resize the sharp crop to fill the full output frame.
+        # No blurred-background composite — content fills the admin resolution
+        # edge-to-edge (no letterboxing / visible bars).
+        crop_resized = cv2.resize(cropped, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
+
+        writer.write(crop_resized)
         frame_idx += 1
 
     cap.release()
@@ -308,14 +312,13 @@ def render_reframed_video(
     cmd = [
         FFMPEG_BIN,
         "-y",
-        "-threads", "0",         # Use all available CPU threads
+        "-threads", "0",
         "-r", str(src_fps),
         "-i", str(tmp_raw),
         "-i", str(audio_src),
         "-c:v", "libx264",
-        "-crf", "23",
-        "-preset", "ultrafast",  # Fastest encoding preset
-        "-tune", "fastdecode",
+        "-crf", "18",
+        "-preset", "fast",
         "-pix_fmt", "yuv420p",
         "-r", str(src_fps),
         "-c:a", "aac",
@@ -323,6 +326,7 @@ def render_reframed_video(
         "-map", "0:v:0",
         "-map", "1:a:0",
         "-shortest",
+        "-movflags", "+faststart",
         str(out_path),
     ]
     log.info("Encoding reframed video with FFmpeg…")

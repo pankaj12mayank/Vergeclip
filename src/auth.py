@@ -46,7 +46,7 @@ if not SECRET_KEY:
     log.warning("JWT_SECRET_KEY not set - using insecure dev fallback. Set JWT_SECRET_KEY env var in production!")
 
 ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256").strip() or "HS256"
-EXPIRE_MINUTES = int(os.environ.get("JWT_EXPIRE_MIN", os.environ.get("JWT_EXPIRE_MINUTES", "10080")) or 10080)
+EXPIRE_MINUTES = int(os.environ.get("JWT_EXPIRE_MIN", os.environ.get("JWT_EXPIRE_MINUTES", "120")) or 120)
 AUTH_REQUIRED = os.environ.get("AUTH_REQUIRED", "false").lower() in ("1", "true", "yes", "on")
 
 # Bcrypt context - passlib handles salt/rounds

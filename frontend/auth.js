@@ -16,6 +16,54 @@ function clearAuth() {
   localStorage.removeItem(AUTH_TOKEN_KEY);
   localStorage.removeItem(AUTH_USER_KEY);
 }
+
+function isTokenExpired(token) {
+  if (!token) return true;
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    const exp = payload.exp * 1000;
+    return Date.now() >= exp;
+  } catch { return true; }
+}
+
+function getTokenTimeLeft(token) {
+  if (!token) return 0;
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    const exp = payload.exp * 1000;
+    return Math.max(0, exp - Date.now());
+  } catch { return 0; }
+}
+
+function autoLogoutIfExpired() {
+  const t = getToken();
+  if (t && isTokenExpired(t)) {
+    clearAuth();
+    showToast('Session expired. Please sign in again.', 'warning');
+    setTimeout(() => { location.href = 'login.html'; }, 1200);
+    return true;
+  }
+  return false;
+}
+
+async function autoRefreshToken() {
+  const t = getToken();
+  if (!t || isTokenExpired(t)) return;
+  const timeLeft = getTokenTimeLeft(t);
+  if (timeLeft < 30 * 60 * 1000) {
+    try {
+      const r = await fetch(`${getApiBase()}/api/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + t, 'Content-Type': 'application/json' }
+      });
+      const j = await r.json();
+      if (j.access_token) setToken(j.access_token);
+    } catch {}
+  }
+}
+
+setInterval(autoRefreshToken, 5 * 60 * 1000);
+
 function getUser() {
   try { return JSON.parse(localStorage.getItem(AUTH_USER_KEY) || 'null'); } catch { return null; }
 }
@@ -591,6 +639,7 @@ function authHeaders() {
 document.addEventListener('DOMContentLoaded', () => {
   ensureLoaderDOM();
   ensureConfirmModalDOM();
+  autoLogoutIfExpired();
   updateAuthUI();
 });
 
@@ -610,3 +659,6 @@ window.handleLogout = handleLogout;
 window.updateAuthUI = updateAuthUI;
 window.formatHumanMessage = formatHumanMessage;
 window.showConfirmModal = showConfirmModal;
+window.isTokenExpired = isTokenExpired;
+window.getTokenTimeLeft = getTokenTimeLeft;
+window.autoLogoutIfExpired = autoLogoutIfExpired;

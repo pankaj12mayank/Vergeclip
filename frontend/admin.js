@@ -55,6 +55,20 @@ function escapeHtml(s) {
   return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+let _tz = 'Asia/Kolkata';
+function formatTime(iso) {
+  if (!iso) return '—';
+  try {
+    return new Date(iso).toLocaleString('en-IN', { timeZone: _tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+  } catch { return new Date(iso).toLocaleString(); }
+}
+function formatDate(iso) {
+  if (!iso) return '—';
+  try {
+    return new Date(iso).toLocaleDateString('en-IN', { timeZone: _tz });
+  } catch { return new Date(iso).toLocaleDateString(); }
+}
+
 /* ─── Admin Check & Auth Guard ───────────────────────────────────────────── */
 async function checkAdmin() {
   const t = token();
@@ -147,6 +161,8 @@ function switchTab(name) {
 async function loadAll() {
   showGlobalLoader('Refreshing Admin Workspace...', 'Synchronizing keys, prompts, queue, and database tables.');
   try {
+    // Load timezone first so all time displays are correct
+    await loadTimezone();
     await Promise.all([
       loadConfig(false),
       loadPrompts(false),
@@ -162,6 +178,16 @@ async function loadAll() {
     hideGlobalLoader();
     showToast('Failed to refresh data: ' + e.message, 'warning');
   }
+}
+
+async function loadTimezone() {
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/pipeline-config`, { headers: hdr() });
+    const j = await r.json();
+    if (j.config && j.config.video_specs && j.config.video_specs.timezone) {
+      _tz = j.config.video_specs.timezone;
+    }
+  } catch {}
 }
 
 /* ─── Custom OpenAI-Compatible AI Provider Modal Handlers ───────────────── */
@@ -376,9 +402,9 @@ async function loadConfig(showLoad = true) {
           <span id="badge_${k}" class="badge ${isSet === true ? 'badge-green' : 'badge-yellow'}">${isSet === true ? '● CONFIGURED' : '○ NOT SET'}</span>
         </div>
         <p class="core-key-desc">${info.desc}</p>
-        <div style="position:relative; display:flex; align-items:center;">
-          <input class="admin-input" id="cfg_${k}" type="password" placeholder="Enter key (leave empty to test configured)" style="padding-right:2.5rem;" />
-          <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('cfg_${k}', this)" title="Show/Hide Key" style="right:10px;">👁️</button>
+        <div class="auth-input-container">
+          <input class="admin-input" id="cfg_${k}" type="password" placeholder="Enter key (leave empty to test configured)" />
+          <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('cfg_${k}', this)" title="Show/Hide Key">👁️</button>
         </div>
         <div class="core-key-actions">
           <button class="btn-outline btn-sm" onclick="testKey('${k}')" title="Test Live Connection">⚡ Verify Connection</button>
@@ -398,32 +424,48 @@ async function loadConfig(showLoad = true) {
     const lim = document.getElementById('configLimits');
     if (lim) {
       lim.innerHTML = `
-        <div class="admin-card" style="padding:1.25rem;">
-          <div style="font-weight:800; font-size:0.9rem; margin-bottom:0.25rem;">FREE_TIER_MONTHLY_LIMIT</div>
-          <p style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.75rem;">Default shorts allowance per registered free account/month.</p>
-          <input class="admin-input" id="cfg_FREE_TIER_MONTHLY_LIMIT" placeholder="5" />
-          <button class="btn-primary btn-sm" style="margin-top:0.75rem; width:100%;" onclick="saveKey('FREE_TIER_MONTHLY_LIMIT')">Save Limit</button>
+        <div class="admin-card limit-card">
+          <div>
+            <div class="limit-card-title">FREE_TIER_MONTHLY_LIMIT</div>
+            <p class="limit-card-desc">Default shorts allowance per registered free account/month.</p>
+          </div>
+          <input class="admin-input" id="cfg_FREE_TIER_MONTHLY_LIMIT" type="number" min="0" max="1000" placeholder="5" />
+          <button class="btn-primary btn-sm limit-card-btn" onclick="saveKey('FREE_TIER_MONTHLY_LIMIT')">Save Limit</button>
         </div>
-        <div class="admin-card" style="padding:1.25rem;">
-          <div style="font-weight:800; font-size:0.9rem; margin-bottom:0.25rem;">MAX_VIDEO_DURATION_MINUTES</div>
-          <p style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.75rem;">Ceiling for input YouTube video length.</p>
-          <input class="admin-input" id="cfg_MAX_VIDEO_DURATION_MINUTES" placeholder="90" />
-          <button class="btn-primary btn-sm" style="margin-top:0.75rem; width:100%;" onclick="saveKey('MAX_VIDEO_DURATION_MINUTES')">Save Duration</button>
+        <div class="admin-card limit-card">
+          <div>
+            <div class="limit-card-title">MAX_VIDEO_DURATION_MINUTES</div>
+            <p class="limit-card-desc">Ceiling for input YouTube video length.</p>
+          </div>
+          <input class="admin-input" id="cfg_MAX_VIDEO_DURATION_MINUTES" type="number" min="1" max="600" placeholder="90" />
+          <button class="btn-primary btn-sm limit-card-btn" onclick="saveKey('MAX_VIDEO_DURATION_MINUTES')">Save Duration</button>
         </div>
-        <div class="admin-card" style="padding:1.25rem;">
-          <div style="font-weight:800; font-size:0.9rem; margin-bottom:0.25rem;">STORAGE_PATH</div>
-          <p style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.75rem;">Local folder for storing generated clips.</p>
+        <div class="admin-card limit-card">
+          <div>
+            <div class="limit-card-title">MAX_SHORTS_PER_VIDEO</div>
+            <p class="limit-card-desc">Hard cap on how many shorts are generated per YouTube link/video. Leave empty for no limit.</p>
+          </div>
+          <input class="admin-input" id="cfg_MAX_SHORTS_PER_VIDEO" type="number" min="0" max="50" placeholder="(no limit)" />
+          <button class="btn-primary btn-sm limit-card-btn" onclick="saveKey('MAX_SHORTS_PER_VIDEO')">Save Limit</button>
+        </div>
+        <div class="admin-card limit-card">
+          <div>
+            <div class="limit-card-title">STORAGE_PATH</div>
+            <p class="limit-card-desc">Local folder for storing generated clips.</p>
+          </div>
           <input class="admin-input" id="cfg_STORAGE_PATH" placeholder="./storage" />
-          <button class="btn-primary btn-sm" style="margin-top:0.75rem; width:100%;" onclick="saveKey('STORAGE_PATH')">Save Path</button>
+          <button class="btn-primary btn-sm limit-card-btn" onclick="saveKey('STORAGE_PATH')">Save Path</button>
         </div>
       `;
       // Populate current values from config
       const limEl = document.getElementById('cfg_FREE_TIER_MONTHLY_LIMIT');
       const durEl = document.getElementById('cfg_MAX_VIDEO_DURATION_MINUTES');
       const storEl = document.getElementById('cfg_STORAGE_PATH');
+      const shortsEl = document.getElementById('cfg_MAX_SHORTS_PER_VIDEO');
       if (limEl) limEl.value = j.config.free_tier_monthly_limit || '5';
       if (durEl) durEl.value = j.config.max_video_duration_minutes || '90';
       if (storEl) storEl.value = j.config.storage_path || './storage';
+      if (shortsEl) shortsEl.value = j.config.max_shorts_per_video || '';
     }
 
     loadSmtpSettings(false);
@@ -469,7 +511,8 @@ async function testKey(key) {
 async function saveKey(key) {
   const el = document.getElementById('cfg_' + key);
   const val = el?.value.trim();
-  if (!val) return showToast('Please enter a valid value to save.', 'warning');
+  // MAX_SHORTS_PER_VIDEO may be cleared (empty = no limit); other keys require a value.
+  if (!val && key !== 'MAX_SHORTS_PER_VIDEO') return showToast('Please enter a valid value to save.', 'warning');
 
   showGlobalLoader(`Saving ${key}...`, 'Updating environment and testing key connection.');
   try {
@@ -519,9 +562,9 @@ async function loadCustomProviders(container, standardCount, totalStandard) {
           <input id="cp_model_${p.id}" class="admin-input" value="${escapeHtml(p.model)}" placeholder="e.g. deepseek-chat" style="font-size:0.85rem;" />
         </div>
 
-        <div style="position:relative; display:flex; align-items:center;">
-          <input class="admin-input" id="cp_key_${p.id}" type="password" placeholder="Enter key (leave empty to test configured)" style="padding-right:2.5rem;" />
-          <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('cp_key_${p.id}', this)" title="Show/Hide Key" style="right:10px;">👁️</button>
+        <div class="auth-input-container">
+          <input class="admin-input" id="cp_key_${p.id}" type="password" placeholder="Enter key (leave empty to test configured)" />
+          <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('cp_key_${p.id}', this)" title="Show/Hide Key">👁️</button>
         </div>
 
         <div class="core-key-actions">
@@ -596,29 +639,54 @@ async function loadPrompts(showLoad = true) {
     const kpiPrompts = document.getElementById('kpi-prompts');
     if (kpiPrompts) kpiPrompts.textContent = `${prompts.length} Active`;
 
+    // Group by category
+    const categoryOrder = ['youtube_shorts', 'script_generation', 'script_based_shorts'];
+    const categoryLabels = {
+      youtube_shorts: '📱 YouTube Shorts Pipeline',
+      script_generation: '✍️ Script Generation',
+      script_based_shorts: '🎬 Script-Based Short Creation',
+    };
+    const grouped = {};
     prompts.forEach(p => {
-      const card = document.createElement('div');
-      card.className = 'admin-card';
-      card.innerHTML = `
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
-          <div style="display:flex; align-items:center; gap:0.6rem;">
-            <strong style="font-size:1.05rem; color:#fff;">${escapeHtml(p.name)} <span style="color:var(--text-muted); font-size:0.85rem;">(${escapeHtml(p.version)})</span></strong>
-            <span class="badge ${p.is_active ? 'badge-green' : 'badge-yellow'}">${p.is_active ? '● LIVE PIPELINE' : '○ INACTIVE'}</span>
-            <span style="color:var(--text-faint); font-size:0.8rem; margin-left:0.25rem;">temp: ${p.temp}</span>
+      const cat = p.category || 'youtube_shorts';
+      if (!grouped[cat]) grouped[cat] = [];
+      grouped[cat].push(p);
+    });
+
+    categoryOrder.forEach(cat => {
+      const items = grouped[cat];
+      if (!items || items.length === 0) return;
+
+      // Section header
+      const header = document.createElement('div');
+      header.style.cssText = 'margin-top:1.5rem; margin-bottom:0.75rem; padding-bottom:0.5rem; border-bottom:1px solid rgba(167,139,250,0.3);';
+      header.innerHTML = `<strong style="font-size:1.05rem; color:#a78bfa;">${categoryLabels[cat] || cat}</strong><span style="color:var(--text-muted); font-size:0.85rem; margin-left:0.5rem;">(${items.length} pipelines)</span>`;
+      div.appendChild(header);
+
+      items.forEach(p => {
+        const card = document.createElement('div');
+        card.className = 'admin-card';
+        card.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
+            <div style="display:flex; align-items:center; gap:0.6rem;">
+              <strong style="font-size:1.05rem; color:#fff;">${escapeHtml(p.name)} <span style="color:var(--text-muted); font-size:0.85rem;">(${escapeHtml(p.version)})</span></strong>
+              <span class="badge ${p.is_active ? 'badge-green' : 'badge-yellow'}">${p.is_active ? '● LIVE PIPELINE' : '○ INACTIVE'}</span>
+              <span style="color:var(--text-faint); font-size:0.8rem; margin-left:0.25rem;">temp: ${p.temp}</span>
+            </div>
+            <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+              <button class="btn-outline btn-sm" onclick="openEditPromptModal(${p.id})">✏️ Edit</button>
+              <button class="btn-outline btn-sm" onclick="testPrompt(${p.id})">🔍 Dry Run</button>
+              <button class="btn-outline btn-sm" onclick="testPromptLive(${p.id})">⚡ Live Test</button>
+              ${p.is_active ? '' : `<button class="btn-primary btn-sm" onclick="activatePrompt(${p.id})">Activate</button>`}
+            </div>
           </div>
-          <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
-            <button class="btn-outline btn-sm" onclick="openEditPromptModal(${p.id})">✏️ Edit</button>
-            <button class="btn-outline btn-sm" onclick="testPrompt(${p.id})">🔍 Dry Run</button>
-            <button class="btn-outline btn-sm" onclick="testPromptLive(${p.id})">⚡ Live Test</button>
-            ${p.is_active ? '' : `<button class="btn-primary btn-sm" onclick="activatePrompt(${p.id})">Activate</button>`}
-          </div>
-        </div>
-        <details style="margin-top:1rem;">
-          <summary style="cursor:pointer; color:var(--purple); font-size:0.85rem; font-weight:700;">View System Prompt & User Template</summary>
-          <pre style="white-space:pre-wrap; background:#050609; padding:0.9rem; border-radius:8px; font-size:0.82rem; margin-top:0.5rem; border:1px solid var(--border-subtle); max-height:220px; overflow:auto;">${escapeHtml(p.system_prompt)}</pre>
-        </details>
-      `;
-      div.appendChild(card);
+          <details style="margin-top:1rem;">
+            <summary style="cursor:pointer; color:var(--purple); font-size:0.85rem; font-weight:700;">View System Prompt & User Template</summary>
+            <pre style="white-space:pre-wrap; background:#050609; padding:0.9rem; border-radius:8px; font-size:0.82rem; margin-top:0.5rem; border:1px solid var(--border-subtle); max-height:220px; overflow:auto;">${escapeHtml(p.system_prompt)}</pre>
+          </details>
+        `;
+        div.appendChild(card);
+      });
     });
   } catch (e) {
     showToast('Failed to load prompts: ' + e.message, 'error');
@@ -778,7 +846,7 @@ async function loadUsers(showLoad = true) {
         <td>
           <span class="badge ${isOwner ? 'badge-purple' : 'badge-green'}">${isOwner ? 'Owner' : (u.tier || 'free')}</span>
         </td>
-        <td style="color:var(--text-muted); font-size:0.82rem;">${u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}</td>
+        <td style="color:var(--text-muted); font-size:0.82rem;">${formatDate(u.created_at)}</td>
         <td style="text-align:right;">
           ${isOwner ? '<span style="color:var(--text-faint); font-size:0.8rem; font-style:italic;">Protected Owner</span>' : `
             <div style="display:inline-flex; gap:0.4rem;">
@@ -1079,7 +1147,7 @@ async function loadJobs(page = 1, showLoad = true) {
     if (jobs.length === 0) {
       tbody.innerHTML = `
         <tr>
-          <td colspan="7" style="text-align:center; padding:2rem; color:var(--text-muted);">
+          <td colspan="8" style="text-align:center; padding:2rem; color:var(--text-muted);">
             No video generation jobs found matching the active filter.
           </td>
         </tr>
@@ -1101,6 +1169,7 @@ async function loadJobs(page = 1, showLoad = true) {
         tr.innerHTML = `
           <td><input type="checkbox" class="job-row-checkbox" data-id="${jb.id}" ${isChecked ? 'checked' : ''} onchange="toggleSingleJobSelect(this)" /></td>
           <td style="font-family:var(--font-mono); font-weight:700; color:#fff;">${jb.id.slice(0, 8)}</td>
+          <td><span class="badge badge-purple" style="font-size:0.7rem;">${jb.job_type === 'script_to_video' ? '📝 Script' : '🎬 YouTube'}</span></td>
           <td><span class="badge badge-purple" style="font-size:0.75rem;">${escapeHtml(jb.user_name || 'System')}</span></td>
           <td style="max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(jb.youtube_url || '')}">
             ${escapeHtml(jb.youtube_url || '—')}
@@ -1114,7 +1183,7 @@ async function loadJobs(page = 1, showLoad = true) {
               <span style="font-size:0.75rem; font-weight:700;${failedAt ? 'color:var(--red);' : ''}">${jb.progress_percent || 0}%${failedAt && phaseLabel ? ' <span style="color:var(--text-muted);font-weight:400;font-size:0.65rem;">(' + phaseLabel + ')</span>' : ''}</span>
             </div>
           </td>
-          <td style="color:var(--text-muted); font-size:0.8rem;">${jb.created_at ? new Date(jb.created_at).toLocaleTimeString() : '—'}</td>
+          <td style="color:var(--text-muted); font-size:0.8rem;">${formatTime(jb.created_at)}</td>
         `;
         tbody.appendChild(tr);
       });
@@ -1284,7 +1353,7 @@ function renderAuditTable() {
       const isSelected = selectedAuditIds.has(ev.id);
       const tr = document.createElement('tr');
       const sevClass = ev.severity === 'SUCCESS' ? 'badge-green' : ev.severity === 'ERROR' ? 'badge-red' : ev.severity === 'WARN' ? 'badge-yellow' : 'badge-purple';
-      const timeStr = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : '—';
+      const timeStr = formatTime(ev.timestamp);
       const hasPayload = Boolean(ev.request_data || ev.response_data);
 
       tr.innerHTML = `
@@ -1582,7 +1651,7 @@ async function submitChangePassword() {
 
 const PIPELINE_FIELDS = [
   // Video Specs
-  'target_width','target_height','target_fps','max_short_duration','min_short_duration',
+  'target_width','target_height','target_fps','max_short_duration','min_short_duration','timezone',
   // Clip Selection
   'clip_min_duration','clip_max_duration','clip_top_n','clip_min_score','clip_min_separation',
   'clip_step_size','clip_overlap_threshold','clip_distribution_strategy',
@@ -1597,6 +1666,25 @@ const PIPELINE_FIELDS = [
 ];
 
 const BOOL_FIELDS = ['auto_color_filter_enabled','auto_pitch_shift_enabled'];
+
+function switchPipelineSubTab(subTab, btn) {
+  const pills = document.querySelectorAll('.pipeline-subnav-pill');
+  pills.forEach(p => p.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+
+  const panes = document.querySelectorAll('.pipetab-pane');
+  if (subTab === 'all') {
+    panes.forEach(pane => pane.classList.add('active'));
+  } else {
+    panes.forEach(pane => {
+      if (pane.id === `pipetab-${subTab}`) {
+        pane.classList.add('active');
+      } else {
+        pane.classList.remove('active');
+      }
+    });
+  }
+}
 
 async function loadPipelineConfig() {
   try {
@@ -1638,6 +1726,25 @@ async function loadPipelineConfig() {
     const fwEl = document.getElementById('pc_faster_whisper_model');
     if (fwEl && cfg.faster_whisper_model) fwEl.value = cfg.faster_whisper_model;
     toggleTranscriptionOptions();
+
+    // Scene generation
+    const sgEl = document.getElementById('pc_video_gen_provider');
+    if (sgEl && cfg.video_gen_provider !== undefined) sgEl.value = cfg.video_gen_provider || '';
+    const pkEl = document.getElementById('pc_pollinations_api_key');
+    if (pkEl && cfg.pollinations_api_key) pkEl.value = cfg.pollinations_api_key;
+    const akEl = document.getElementById('pc_agnes_api_key');
+    if (akEl && cfg.agnes_api_key) akEl.value = cfg.agnes_api_key;
+    const cuEl = document.getElementById('pc_comfyui_url');
+    if (cuEl && cfg.comfyui_url) cuEl.value = cfg.comfyui_url;
+    toggleSceneGenOptions();
+    renderSavedKeys(cfg);
+
+    // Update timezone for time display
+    const tzEl = document.getElementById('pc_timezone');
+    if (tzEl && cfg.video_specs && cfg.video_specs.timezone) {
+      _tz = cfg.video_specs.timezone;
+      tzEl.value = cfg.video_specs.timezone;
+    }
 
     // Scoring weights
     const weights = flat.scoring_weights || {};
@@ -1693,6 +1800,9 @@ async function savePipelineConfig() {
   if (tpEl) payload.transcription_provider = tpEl.value;
   const gmEl = document.getElementById('pc_groq_whisper_model');
   if (gmEl) payload.groq_whisper_model = gmEl.value;
+  // Scene generation
+  const sgEl = document.getElementById('pc_video_gen_provider');
+  if (sgEl) payload.video_gen_provider = sgEl.value;
 
   showGlobalLoader('Saving Pipeline Settings...', 'Applying configuration to all components.');
   try {
@@ -1746,6 +1856,177 @@ function toggleTranscriptionOptions() {
   const fwWrap = document.getElementById('fasterWhisperModelWrap');
   if (groqWrap) groqWrap.style.display = provider === 'groq' ? '' : 'none';
   if (fwWrap) fwWrap.style.display = provider === 'faster_whisper' ? '' : 'none';
+}
+
+async function saveSceneGeneration() {
+  const payload = {};
+  const sgEl = document.getElementById('pc_video_gen_provider');
+  const pkEl = document.getElementById('pc_pollinations_api_key');
+  const akEl = document.getElementById('pc_agnes_api_key');
+  const cuEl = document.getElementById('pc_comfyui_url');
+  if (sgEl) payload.video_gen_provider = sgEl.value;
+  if (pkEl && pkEl.value.trim()) payload.pollinations_api_key = pkEl.value.trim();
+  if (akEl && akEl.value.trim()) payload.agnes_api_key = akEl.value.trim();
+  if (cuEl && cuEl.value.trim()) payload.comfyui_url = cuEl.value.trim();
+
+  showGlobalLoader('Saving Scene Generation...', 'Applying video generation provider.');
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/pipeline-config`, {
+      method: 'POST',
+      headers: hdr(),
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json();
+    hideGlobalLoader();
+    if (!r.ok || !j.success) throw new Error(j.detail || 'Failed to save');
+    showToast('Scene generation saved!', 'success');
+    // Clear key inputs after save (they're now stored securely)
+    if (pkEl) pkEl.value = '';
+    if (akEl) akEl.value = '';
+    loadPipelineConfig();
+  } catch (err) {
+    hideGlobalLoader();
+    showToast(err.message || 'Save failed', 'error');
+  }
+}
+
+function toggleSceneGenOptions() {
+  const provider = document.getElementById('pc_video_gen_provider')?.value || '';
+  const pkWrap = document.getElementById('pollinationsKeyWrap');
+  const akWrap = document.getElementById('agnesKeyWrap');
+  const lkWrap = document.getElementById('localKeyWrap');
+  if (pkWrap) pkWrap.style.display = provider === 'pollinations' ? '' : 'none';
+  if (akWrap) akWrap.style.display = provider === 'agnes' ? '' : 'none';
+  if (lkWrap) lkWrap.style.display = provider === 'local' ? '' : 'none';
+}
+
+async function testVideoProvider(provider, inputId) {
+  const value = inputId ? (document.getElementById(inputId)?.value.trim() || '') : '';
+  showGlobalLoader(`Testing ${provider} connection...`, 'Contacting provider to verify API authentication.');
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/video-provider/test`, {
+      method: 'POST',
+      headers: hdr(),
+      body: JSON.stringify({ provider, value })
+    });
+    const j = await r.json();
+    hideGlobalLoader();
+    if (!r.ok) throw new Error(j.detail || 'Test failed');
+    showToast(j.message, j.verified ? 'success' : 'error');
+  } catch (e) {
+    hideGlobalLoader();
+    showToast('Test failed: ' + e.message, 'error');
+  }
+}
+
+function renderSavedKeys(cfg) {
+  const display = document.getElementById('savedKeysDisplay');
+  const list = document.getElementById('savedKeysList');
+  const statusBanner = document.getElementById('sceneGenActiveStatus');
+  if (!display || !list) return;
+
+  const keys = [];
+  const pk = cfg.pollinations_api_key || '';
+  const ak = cfg.agnes_api_key || '';
+  const active = cfg.video_gen_provider || '';
+
+  if (pk) keys.push({ name: 'Pollinations.ai', key: pk, id: 'pollinations' });
+  if (ak) keys.push({ name: 'Agnes AI', key: ak, id: 'agnes' });
+
+  // Update status banner
+  if (statusBanner) {
+    const hasLocal = (active === 'local');
+    if (keys.length > 0 || hasLocal) {
+      statusBanner.style.display = '';
+      statusBanner.style.background = 'rgba(16,185,129,0.1)';
+      statusBanner.style.borderColor = 'rgba(16,185,129,0.3)';
+      statusBanner.style.color = '#10b981';
+      const provName = active === 'local' ? 'Local CogVideoX-2B (GPU)' : (keys.find(k => k.id === active)?.name || keys[0].name);
+      const extras = (active === 'local' && keys.length > 0) ? ' — cloud keys also fallback' : '';
+      statusBanner.innerHTML = `✓ Video generation enabled — provider: <strong>${provName}</strong>${extras}. The system auto-switches providers in order until one succeeds.`;
+      if (active === 'local') {
+        statusBanner.style.background = 'rgba(139,92,246,0.12)';
+        statusBanner.style.borderColor = 'rgba(139,92,246,0.3)';
+        statusBanner.style.color = '#a78bfa';
+      }
+    } else {
+      statusBanner.style.display = '';
+      statusBanner.style.background = 'rgba(251,191,36,0.1)';
+      statusBanner.style.borderColor = 'rgba(251,191,36,0.3)';
+      statusBanner.style.color = '#fbbf24';
+      statusBanner.innerHTML = '⚠ No provider configured — Script-to-Video will use PIL generative backgrounds';
+    }
+  }
+
+  if (keys.length === 0) {
+    display.style.display = 'none';
+    return;
+  }
+
+  display.style.display = '';
+  list.innerHTML = keys.map(k => {
+    const masked = k.key.substring(0, 8) + '••••••••' + k.key.substring(k.key.length - 4);
+    return `
+      <div style="display:flex; align-items:center; gap:0.75rem; padding:0.5rem 0.75rem; background:rgba(255,255,255,0.03); border-radius:8px; border:1px solid rgba(255,255,255,0.06);">
+        <span style="font-size:0.82rem; color:var(--text-primary); font-weight:600; min-width:130px;">${k.name}</span>
+        <span style="font-size:0.78rem; color:var(--text-muted); font-family:monospace; flex:1;">${masked}</span>
+        <button class="btn-outline btn-sm" onclick="editSceneKey('${k.id}')">✏️ Edit</button>
+        <button class="btn-outline btn-sm btn-danger-outline" onclick="deleteSavedKey('${k.id}')">🗑️ Delete</button>
+      </div>
+    `;
+  }).join('');
+}
+
+function editSceneKey(providerId) {
+  const select = document.getElementById('pc_video_gen_provider');
+  if (select) {
+    select.value = providerId;
+    toggleSceneGenOptions();
+  }
+  // Focus the key input
+  const keyIds = { pollinations: 'pc_pollinations_api_key', agnes: 'pc_agnes_api_key' };
+  const keyInput = document.getElementById(keyIds[providerId]);
+  if (keyInput) {
+    keyInput.focus();
+    keyInput.select();
+  }
+}
+
+const KEY_META = {
+  pollinations: { name: 'Pollinations.ai', setting: 'pollinations_api_key' },
+  agnes: { name: 'Agnes AI', setting: 'agnes_api_key' },
+};
+
+async function deleteSavedKey(providerId) {
+  const meta = KEY_META[providerId];
+  if (!meta) return;
+
+  showConfirmModal({
+    title: `Delete ${meta.name} API Key`,
+    message: `This permanently removes the stored key. The provider will no longer be used for video generation until you add a new key.`,
+    icon: '🗑️',
+    confirmText: 'Delete Key',
+    cancelText: 'Keep Key',
+    confirmType: 'danger',
+    onConfirm: async () => {
+      showGlobalLoader(`Deleting ${meta.name} key...`, 'Removing saved API key from database.');
+      try {
+        const r = await fetch(`${API_BASE}/api/admin/config/delete-key`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: meta.setting }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.detail || 'Failed to delete API key');
+        hideGlobalLoader();
+        showToast(`${meta.name} API key deleted`, 'success');
+        await loadPipelineConfig();
+      } catch (err) {
+        hideGlobalLoader();
+        showToast(err.message || 'Failed to delete API key', 'error');
+      }
+    }
+  });
 }
 
 async function resetPipelineConfig() {

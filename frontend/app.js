@@ -21,6 +21,16 @@ let allRenderedClips = [];
 let pollInterval = null;
 let sseSource = null;
 
+/* ─── Global scroll lock when any modal is open ─────────────────────────────── */
+(function _initScrollLock() {
+  function _checkScrollLock() {
+    const anyOpen = document.querySelector('.video-modal-backdrop[style*="display: flex"], .video-modal-backdrop[style*="display:flex"], .video-modal-backdrop:not([style*="display: none"]):not([style*="display:none"])');
+    document.body.style.overflow = anyOpen ? 'hidden' : '';
+  }
+  new MutationObserver(_checkScrollLock).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class'] });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setTimeout(_checkScrollLock, 10); });
+})();
+
 function getAuthToken() {
   return localStorage.getItem('ps_auth_token') || '';
 }
@@ -182,6 +192,13 @@ window.startAutoGenerate = async function() {
   if (subtitle) subtitle.textContent = 'Analyzing transcript, ranking hooks, centering speakers, and generating captions.';
   const pb = document.getElementById('monitorProgressBar');
   if (pb) { pb.style.width = '5%'; pb.style.background = ''; }
+
+  // Restore stepper labels (script-to-video may overwrite them)
+  const _stepLabels = { 'step-download': '1. Download', 'step-transcribe': '2. Transcribe', 'step-select': '3. Select Clips', 'step-rank': '4. AI Ranking', 'step-render': '5. 9:16 Render' };
+  for (const [id, label] of Object.entries(_stepLabels)) {
+    const el = document.getElementById(id);
+    if (el) { el.querySelector('.stepper-step-label').textContent = label; el.style.display = ''; }
+  }
 
   resetSteppers('step-download');
   showToast('Started generating shorts!', 'info');
@@ -805,7 +822,8 @@ function showScriptModal(scriptText, topicTitle) {
           <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:0.75rem;">Here is your structured, retention-optimized short script ready for voiceover or automated generation:</p>
           <pre id="scriptModalContent" style="white-space:pre-wrap; background:#07090f; padding:1.2rem; border-radius:10px; font-family:var(--font-body); font-size:0.92rem; line-height:1.6; color:#e2e8f0; border:1px solid var(--border-medium);"></pre>
         </div>
-        <div class="video-modal-footer" style="justify-content:flex-end;">
+        <div class="video-modal-footer" style="justify-content:space-between; gap:0.75rem;">
+          <button class="btn-primary btn-sm" id="scriptVideoBtn" onclick="generateVideoFromScript()" style="min-width:200px;">🎬 Generate Video Shorts</button>
           <button class="btn-primary btn-sm" onclick="copyScriptText()" style="min-width:180px;">📋 Copy Full Script</button>
         </div>
       </div>
@@ -817,6 +835,17 @@ function showScriptModal(scriptText, topicTitle) {
   const contentEl = document.getElementById('scriptModalContent');
   if (titleEl) titleEl.textContent = `✨ Viral Script: ${topicTitle.slice(0, 40)}`;
   if (contentEl) contentEl.textContent = scriptText;
+
+  // Store script text for the generate button
+  modal.dataset.script = scriptText;
+  modal.dataset.topic = topicTitle;
+
+  const videoBtn = document.getElementById('scriptVideoBtn');
+  if (videoBtn) {
+    videoBtn.disabled = false;
+    videoBtn.textContent = '🎬 Generate Video Shorts';
+    videoBtn.style.opacity = '1';
+  }
 
   modal.style.display = 'flex';
   modal.onclick = (e) => {
@@ -830,6 +859,156 @@ window.copyScriptText = function() {
     navigator.clipboard.writeText(content);
     showToast('Script copied to clipboard! 📋', 'success');
   }
+};
+
+window.generateVideoFromScript = async function() {
+  const modal = document.getElementById('scriptResultModal');
+  if (!modal) return;
+
+  const scriptText = modal.dataset.script || '';
+  const topicTitle = modal.dataset.topic || 'Script';
+  const btn = document.getElementById('scriptVideoBtn');
+  if (!btn) return;
+
+  if (!scriptText.trim()) {
+    showToast('Script is empty — cannot generate video.', 'error');
+    return;
+  }
+
+  // Prevent accidental navigation during generation
+  window.isGeneratingShorts = true;
+
+  // Close script modal
+  modal.style.display = 'none';
+
+  // Show pipeline monitor card with script-to-video stepper labels
+  const monitorCard = document.getElementById('pipelineMonitorCard');
+  if (monitorCard) monitorCard.style.display = 'block';
+
+  // Rewrite stepper labels for script-to-video
+  const stepDownload = document.getElementById('step-download');
+  const stepTranscribe = document.getElementById('step-transcribe');
+  const stepSelect = document.getElementById('step-select');
+  const stepRank = document.getElementById('step-rank');
+  const stepRender = document.getElementById('step-render');
+  if (stepDownload) stepDownload.querySelector('.stepper-step-label').textContent = '1. TTS Voiceover';
+  if (stepTranscribe) stepTranscribe.querySelector('.stepper-step-label').textContent = '2. Scene Generation';
+  if (stepSelect) stepSelect.querySelector('.stepper-step-label').textContent = '3. Encoding';
+  if (stepRank) { stepRank.querySelector('.stepper-step-label').textContent = '4. Finalize'; stepRank.style.display = ''; }
+  if (stepRender) { stepRender.style.display = 'none'; }
+
+  // Set titles
+  const title = document.getElementById('monitorTitle');
+  const subtitle = document.getElementById('monitorSubtitle');
+  const phaseText = document.getElementById('monitorPhaseText');
+  const percentText = document.getElementById('monitorPercentText');
+  const logBox = document.getElementById('monitorLiveLog');
+  const spinner = document.getElementById('monitorSpinner');
+  if (title) title.textContent = 'Generating Script Video Short...';
+  if (subtitle) subtitle.textContent = 'Synthesizing voiceover, generating AI scenes, and encoding 9:16 video.';
+  if (phaseText) phaseText.textContent = 'Phase 1/3: Starting TTS voiceover synthesis...';
+  if (percentText) percentText.textContent = '5%';
+  if (spinner) spinner.style.display = '';
+  if (logBox) logBox.textContent = '> Initializing script-to-video pipeline...';
+
+  // Reset steppers to first step
+  resetSteppers('step-download');
+
+  // Animate progress while waiting
+  const progressSteps = [
+    { pct: 10, phase: 'download', text: 'Phase 1/3: Synthesizing TTS voiceover with word timing...', log: '> TTS engine processing voiceover text...' },
+    { pct: 25, phase: 'download', text: 'Phase 1/3: TTS voiceover generating...', log: '> Voiceover synthesis in progress...' },
+    { pct: 40, phase: 'transcribe', text: 'Phase 2/3: Generating AI scene backgrounds...', log: '> Scene generation starting...' },
+    { pct: 55, phase: 'transcribe', text: 'Phase 2/3: Creating scene visuals per section...', log: '> Rendering AI scene images for each section...' },
+    { pct: 70, phase: 'select', text: 'Phase 3/3: Encoding video with word-synced captions...', log: '> FFmpeg encoding HD 9:16 video...' },
+    { pct: 85, phase: 'select', text: 'Phase 3/3: Applying animations and captions...', log: '> Zoompan animations, caption overlay...' },
+    { pct: 95, phase: 'select', text: 'Phase 3/3: Finalizing video output...', log: '> Writing final MP4 to disk...' },
+  ];
+  let progressIdx = 0;
+  const progressTimer = setInterval(() => {
+    if (progressIdx >= progressSteps.length) return;
+    const s = progressSteps[progressIdx];
+    const pb = document.getElementById('monitorProgressBar');
+    if (pb) pb.style.width = s.pct + '%';
+    if (percentText) percentText.textContent = s.pct + '%';
+    if (phaseText) phaseText.textContent = s.text;
+    updateStepperPhases(s.phase);
+    if (logBox) { logBox.textContent += '\n' + s.log; logBox.scrollTop = logBox.scrollHeight; }
+    progressIdx++;
+  }, 4000);
+
+  // Disable button
+  btn.disabled = true;
+  btn.textContent = '⏳ Generating...';
+  btn.style.opacity = '0.6';
+
+  try {
+    const token = localStorage.getItem('auth_token') || sessionStorage.getItem('auth_token');
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+
+    const res = await fetch('/api/pipeline/script-to-video', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ script: scriptText }),
+    });
+
+    const data = await res.json();
+
+    clearInterval(progressTimer);
+
+    if (!res.ok || !data.success) {
+      throw new Error(data.detail || data.message || 'Generation failed');
+    }
+
+    // Mark complete
+    const pb = document.getElementById('monitorProgressBar');
+    if (pb) { pb.style.width = '100%'; pb.style.background = 'linear-gradient(90deg, #10b981, #34d399)'; }
+    if (percentText) percentText.textContent = '100%';
+    if (phaseText) phaseText.textContent = '✅ Complete!';
+    if (spinner) spinner.style.display = 'none';
+    if (logBox) { logBox.textContent += `\n> ✅ Video created: ${data.filename} (${data.duration.toFixed(1)}s) - ${data.width}x${data.height}`; logBox.scrollTop = logBox.scrollHeight; }
+    if (title) title.textContent = 'Video Short Created!';
+    const sizeMB = data.size_bytes ? (data.size_bytes / 1048576).toFixed(1) : '?';
+    if (subtitle) subtitle.textContent = `${data.filename} • ${data.duration.toFixed(1)}s • ${sizeMB} MB`;
+
+    showToast(`Video created: ${data.filename} (${data.duration.toFixed(1)}s)`, 'success');
+
+    // Refresh gallery immediately
+    if (typeof refreshOutputs === 'function') refreshOutputs();
+
+    // Auto-hide monitor after 4s and scroll to gallery
+    setTimeout(() => {
+      if (monitorCard) monitorCard.style.display = 'none';
+      // Reset stepper labels back to YouTube defaults
+      const _stepLabels = { 'step-download': '1. Download', 'step-transcribe': '2. Transcribe', 'step-select': '3. Select Clips', 'step-rank': '4. AI Ranking', 'step-render': '5. 9:16 Render' };
+      for (const [id, label] of Object.entries(_stepLabels)) {
+        const el = document.getElementById(id);
+        if (el) { el.querySelector('.stepper-step-label').textContent = label; el.style.display = ''; }
+      }
+      const gallery = document.getElementById('gallerySection');
+      if (gallery) gallery.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 4000);
+
+  } catch (err) {
+    clearInterval(progressTimer);
+
+    const pb = document.getElementById('monitorProgressBar');
+    if (pb) { pb.style.width = '100%'; pb.style.background = 'var(--red)'; }
+    if (phaseText) phaseText.textContent = '❌ Failed: ' + err.message;
+    if (spinner) spinner.style.display = 'none';
+    if (logBox) { logBox.textContent += `\n> ❌ ERROR: ${err.message}`; logBox.scrollTop = logBox.scrollHeight; }
+    if (title) title.textContent = 'Generation Failed';
+    if (subtitle) subtitle.textContent = err.message;
+
+    window.isGeneratingShorts = false;
+    showToast('Video Generation: ' + err.message, 'error');
+  }
+
+  // Re-enable button
+  btn.disabled = false;
+  btn.textContent = '🎬 Generate Video Shorts';
+  btn.style.opacity = '1';
 };
 
 /* ─── Fullscreen Video Modal ─────────────────────────────────────────────── */

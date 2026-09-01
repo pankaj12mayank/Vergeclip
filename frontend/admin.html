@@ -88,7 +88,7 @@
         </div>
 
         <div class="admin-sidebar-actions">
-          <a href="index.html" class="btn-outline btn-sm" style="flex:1;">← Back to App</a>
+          <a href="index.html" class="btn-outline btn-sm sidebar-back-btn">Back to App</a>
           <button class="btn-outline btn-sm btn-danger-outline" onclick="handleLogout()" title="Sign Out">Logout</button>
         </div>
       </div>
@@ -174,9 +174,9 @@
               </div>
               <div>
                 <label class="auth-label">Password / App Password</label>
-                <div style="position:relative; display:flex; align-items:center;">
-                  <input id="smtp_password" type="password" class="admin-input" placeholder="Enter SMTP password" style="padding-right:2.5rem;" />
-                  <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('smtp_password', this)" style="right:10px;">👁️</button>
+                <div class="auth-input-container">
+                  <input id="smtp_password" type="password" class="admin-input" placeholder="Enter SMTP password" />
+                  <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('smtp_password', this)" title="Show/Hide Key">👁️</button>
                 </div>
               </div>
               <div>
@@ -314,6 +314,7 @@
                   <tr>
                     <th style="width:36px;"><input type="checkbox" id="selectAllJobs" onchange="toggleSelectAllJobs(this.checked)" /></th>
                     <th>Job ID</th>
+                    <th>Type</th>
                     <th>User</th>
                     <th>Source Video / URL</th>
                     <th>Status</th>
@@ -336,144 +337,259 @@
 
         <!-- ── 5. Pipeline Settings Tab ── -->
         <section id="panel-pipeline" class="admin-panel">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.25rem; flex-wrap:wrap; gap:0.75rem;">
+          <div class="plane-sticky-bar">
             <div>
-              <h2 style="font-size:1.15rem; font-weight:700; color:var(--text-primary);">🔧 Pipeline Configuration</h2>
-              <p style="font-size:0.82rem; color:var(--text-muted);">Adjust video output, clip selection, scoring, captions, and enhancement settings. Changes take effect immediately.</p>
+              <h2 style="font-size:1.15rem; font-weight:800; color:var(--text-primary);">🔧 Pipeline Configuration</h2>
+              <p style="font-size:0.82rem; color:var(--text-muted); margin:0.1rem 0 0;">Adjust video output, clip selection, scoring, captions, and enhancement. Changes apply immediately.</p>
             </div>
-            <div style="display:flex; gap:0.5rem;">
+            <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
               <button class="btn-outline btn-sm" onclick="resetPipelineConfig()">↩ Reset Defaults</button>
               <button class="btn-primary btn-sm" onclick="savePipelineConfig()">💾 Save All Settings</button>
             </div>
           </div>
 
-          <!-- Transcription Engine -->
-          <div class="admin-card" style="margin-bottom:1rem; border-left:3px solid var(--accent-primary);">
-            <h3 class="admin-card-title">🎙️ Transcription Engine</h3>
-            <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:0.75rem;">Choose which speech-to-text engine powers Phase 2. Groq Whisper is FREE (requires org model enabled). Faster-Whisper runs locally (no API key). AssemblyAI is cloud paid.</p>
-            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:0.75rem; margin-top:0.75rem;">
-              <div>
-                <label class="auth-label">Active Provider</label>
-                <select id="pc_transcription_provider" class="admin-input" onchange="toggleTranscriptionOptions()">
-                  <option value="groq">☁️ Groq Whisper (FREE — cloud)</option>
-                  <option value="faster_whisper">⚡ Faster-Whisper (FREE — local)</option>
-                  <option value="assemblyai">💬 AssemblyAI (paid — cloud)</option>
-                </select>
-              </div>
-              <div id="groqModelWrap">
-                <label class="auth-label">Groq Model</label>
-                <select id="pc_groq_whisper_model" class="admin-input">
-                  <option value="whisper-large-v3">whisper-large-v3 (highest accuracy)</option>
-                  <option value="whisper-large-v3-turbo">whisper-large-v3-turbo (faster)</option>
-                </select>
-              </div>
-              <div id="fasterWhisperModelWrap" style="display:none;">
-                <label class="auth-label">Local Model</label>
-                <select id="pc_faster_whisper_model" class="admin-input">
-                  <option value="base">base (fast, ~1GB VRAM)</option>
-                  <option value="small">small (balanced, ~2GB VRAM)</option>
-                  <option value="medium">medium (accurate, ~5GB VRAM)</option>
-                  <option value="large-v3">large-v3 (best, ~10GB VRAM)</option>
-                </select>
-              </div>
-            </div>
-            <button class="btn-primary btn-sm" style="margin-top:0.75rem;" onclick="saveTranscriptionEngine()">💾 Save Transcription Engine</button>
+          <!-- ── Sleek Categorized Sub-Tab Navigation Bar ── -->
+          <div class="pipeline-subnav-bar">
+            <button class="pipeline-subnav-pill active" onclick="switchPipelineSubTab('audio', this)">
+              <span class="subnav-pill-icon">🎙️</span> Audio & Engines
+            </button>
+            <button class="pipeline-subnav-pill" onclick="switchPipelineSubTab('video', this)">
+              <span class="subnav-pill-icon">🎬</span> Video & Captions
+            </button>
+            <button class="pipeline-subnav-pill" onclick="switchPipelineSubTab('clips', this)">
+              <span class="subnav-pill-icon">✂️</span> Clip Selection
+            </button>
+            <button class="pipeline-subnav-pill" onclick="switchPipelineSubTab('ai', this)">
+              <span class="subnav-pill-icon">🧠</span> AI Scoring & Weights
+            </button>
+            <button class="pipeline-subnav-pill" onclick="switchPipelineSubTab('all', this)">
+              <span class="subnav-pill-icon">⚙️</span> All Settings (Overview)
+            </button>
           </div>
 
-          <!-- Video Output Specs -->
-          <div class="admin-card" style="margin-bottom:1rem;">
-            <h3 class="admin-card-title">🎬 Video Output Specification</h3>
-            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:0.75rem; margin-top:0.75rem;">
-              <div><label class="auth-label">Width (px)</label><input id="pc_target_width" class="admin-input" type="number" min="320" max="4096" /></div>
-              <div><label class="auth-label">Height (px)</label><input id="pc_target_height" class="admin-input" type="number" min="320" max="7680" /></div>
-              <div><label class="auth-label">FPS</label><input id="pc_target_fps" class="admin-input" type="number" min="15" max="120" /></div>
-              <div><label class="auth-label">Max Duration (s)</label><input id="pc_max_short_duration" class="admin-input" type="number" min="5" max="600" /></div>
-              <div><label class="auth-label">Min Duration (s)</label><input id="pc_min_short_duration" class="admin-input" type="number" min="3" max="300" /></div>
-            </div>
-          </div>
-
-          <!-- Clip Selection -->
-          <div class="admin-card" style="margin-bottom:1rem;">
-            <h3 class="admin-card-title">✂️ Clip Selection Parameters</h3>
-            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:0.75rem; margin-top:0.75rem;">
-              <div><label class="auth-label">Min Clip Duration (s)</label><input id="pc_clip_min_duration" class="admin-input" type="number" step="0.5" min="3" max="120" /></div>
-              <div><label class="auth-label">Max Clip Duration (s)</label><input id="pc_clip_max_duration" class="admin-input" type="number" step="0.5" min="5" max="300" /></div>
-              <div><label class="auth-label">Top N Candidates</label><input id="pc_clip_top_n" class="admin-input" type="number" min="1" max="100" /></div>
-              <div><label class="auth-label">Min Score</label><input id="pc_clip_min_score" class="admin-input" type="number" step="0.5" min="0" max="100" /></div>
-              <div><label class="auth-label">Min Separation (s)</label><input id="pc_clip_min_separation" class="admin-input" type="number" step="1" min="0" max="600" /></div>
-              <div><label class="auth-label">Step Size (s)</label><input id="pc_clip_step_size" class="admin-input" type="number" step="0.1" min="0.5" max="10" /></div>
-              <div><label class="auth-label">Overlap Threshold</label><input id="pc_clip_overlap_threshold" class="admin-input" type="number" step="0.05" min="0" max="1" /></div>
-              <div><label class="auth-label">Distribution Strategy</label>
-                <select id="pc_clip_distribution_strategy" class="admin-input">
-                  <option value="spaced_top">Spaced Top</option>
-                  <option value="bucketed">Bucketed</option>
-                </select>
+          <!-- ── PANE 1: Audio & AI Engines ── -->
+          <div id="pipetab-audio" class="pipetab-pane active">
+            <!-- Transcription Engine -->
+            <div class="plane-card" style="--accent:#7c3aed; border-left-color:#7c3aed;">
+              <div class="plane-card-head">
+                <h3>🎙️ Transcription Engine</h3>
+                <p class="plane-card-desc">Speech-to-text engine for Phase 2. Groq Whisper is FREE (org model enabled). Faster-Whisper runs locally. AssemblyAI is cloud paid.</p>
+              </div>
+              <div class="plane-field-grid">
+                <div class="plane-field">
+                  <label class="auth-label">Active Provider</label>
+                  <select id="pc_transcription_provider" class="admin-input" onchange="toggleTranscriptionOptions()">
+                    <option value="groq">☁️ Groq Whisper (FREE — cloud)</option>
+                    <option value="faster_whisper">⚡ Faster-Whisper (FREE — local)</option>
+                    <option value="assemblyai">💬 AssemblyAI (paid — cloud)</option>
+                  </select>
+                </div>
+                <div class="plane-field" id="groqModelWrap">
+                  <label class="auth-label">Groq Model</label>
+                  <select id="pc_groq_whisper_model" class="admin-input">
+                    <option value="whisper-large-v3">whisper-large-v3 (highest accuracy)</option>
+                    <option value="whisper-large-v3-turbo">whisper-large-v3-turbo (faster)</option>
+                  </select>
+                </div>
+                <div class="plane-field" id="fasterWhisperModelWrap" style="display:none;">
+                  <label class="auth-label">Local Model</label>
+                  <select id="pc_faster_whisper_model" class="admin-input">
+                    <option value="base">base (fast, ~1GB VRAM)</option>
+                    <option value="small">small (balanced, ~2GB VRAM)</option>
+                    <option value="medium">medium (accurate, ~5GB VRAM)</option>
+                    <option value="large-v3">large-v3 (best, ~10GB VRAM)</option>
+                  </select>
+                </div>
+              </div>
+              <div class="plane-save-row">
+                <button class="btn-primary btn-sm" onclick="saveTranscriptionEngine()">💾 Save Transcription Engine</button>
               </div>
             </div>
-          </div>
 
-          <!-- Semantic Ranking -->
-          <div class="admin-card" style="margin-bottom:1rem;">
-            <h3 class="admin-card-title">🧠 Semantic Ranking Defaults</h3>
-            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:0.75rem; margin-top:0.75rem;">
-              <div><label class="auth-label">Pool Size</label><input id="pc_semantic_default_pool_size" class="admin-input" type="number" min="10" max="500" /></div>
-              <div><label class="auth-label">Min Score</label><input id="pc_semantic_min_score" class="admin-input" type="number" step="0.5" min="0" max="100" /></div>
-              <div><label class="auth-label">Top N</label><input id="pc_semantic_default_top_n" class="admin-input" type="number" min="1" max="100" /></div>
-              <div><label class="auth-label">Separation (s)</label><input id="pc_semantic_default_separation" class="admin-input" type="number" step="1" min="0" max="600" /></div>
-            </div>
-          </div>
-
-          <!-- Caption Settings -->
-          <div class="admin-card" style="margin-bottom:1rem;">
-            <h3 class="admin-card-title">💬 Caption Rendering</h3>
-            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:0.75rem; margin-top:0.75rem;">
-              <div><label class="auth-label">Font Size</label><input id="pc_caption_font_size" class="admin-input" type="number" min="12" max="200" /></div>
-              <div><label class="auth-label">Max Words/Chunk</label><input id="pc_caption_max_words" class="admin-input" type="number" min="1" max="15" /></div>
-              <div><label class="auth-label">Min Words/Chunk</label><input id="pc_caption_min_words" class="admin-input" type="number" min="1" max="10" /></div>
-              <div><label class="auth-label">Max Lines</label><input id="pc_caption_max_lines" class="admin-input" type="number" min="1" max="5" /></div>
-              <div><label class="auth-label">Max Width (px)</label><input id="pc_caption_max_width" class="admin-input" type="number" min="200" max="1080" /></div>
-              <div><label class="auth-label">Y Position</label><input id="pc_caption_y" class="admin-input" type="number" min="100" max="1920" /></div>
-              <div><label class="auth-label">Text Color (R,G,B)</label><input id="pc_caption_text_color" class="admin-input" placeholder="255,255,255" /></div>
-              <div><label class="auth-label">Highlight Color (R,G,B)</label><input id="pc_caption_highlight_color" class="admin-input" placeholder="255,230,0" /></div>
-              <div><label class="auth-label">Outline Color (R,G,B)</label><input id="pc_caption_outline_color" class="admin-input" placeholder="0,0,0" /></div>
-              <div><label class="auth-label">Outline Width</label><input id="pc_caption_outline_width" class="admin-input" type="number" min="0" max="20" /></div>
-              <div><label class="auth-label">Start Padding (s)</label><input id="pc_caption_start_padding" class="admin-input" type="number" step="0.01" min="0" max="2" /></div>
-              <div><label class="auth-label">End Padding (s)</label><input id="pc_caption_end_padding" class="admin-input" type="number" step="0.01" min="0" max="2" /></div>
-              <div><label class="auth-label">Max Duration (s)</label><input id="pc_caption_max_duration" class="admin-input" type="number" step="0.1" min="0.5" max="10" /></div>
-              <div><label class="auth-label">Min Duration (s)</label><input id="pc_caption_min_duration" class="admin-input" type="number" step="0.1" min="0.1" max="5" /></div>
-            </div>
-          </div>
-
-          <!-- Enhancement -->
-          <div class="admin-card" style="margin-bottom:1rem;">
-            <h3 class="admin-card-title">✨ Auto Enhancement</h3>
-            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:0.75rem; margin-top:0.75rem;">
-              <div style="display:flex; align-items:center; gap:0.5rem;">
-                <input id="pc_auto_color_filter_enabled" type="checkbox" style="width:18px; height:18px;" />
-                <label class="auth-label" style="margin:0;">Enable Color Filter</label>
+            <!-- Scene Generation -->
+            <div class="plane-card" style="border-left-color:#10b981;">
+              <div class="plane-card-head">
+                <h3>🎬 Scene Generation (Script-to-Video)</h3>
+                <p class="plane-card-desc">AI provider that creates cinematic scene backgrounds for Script-to-Video. Only one provider is active at a time.</p>
               </div>
-              <div style="display:flex; align-items:center; gap:0.5rem;">
-                <input id="pc_auto_pitch_shift_enabled" type="checkbox" style="width:18px; height:18px;" />
-                <label class="auth-label" style="margin:0;">Enable Pitch Shift</label>
+              <div id="sceneGenActiveStatus" style="display:none; padding:0.4rem 0.75rem; background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.3); border-radius:6px; margin-top:0.75rem; font-size:0.82rem; color:#10b981;"></div>
+              <div class="plane-field-grid">
+                <div class="plane-field">
+                  <label class="auth-label">Active Provider</label>
+                  <select id="pc_video_gen_provider" class="admin-input" onchange="toggleSceneGenOptions()">
+                    <option value="pollinations">🎬 Pollinations.ai Video (best quality, paid credits)</option>
+                    <option value="agnes">🌸 Agnes AI V2.0 (completely free, unlimited)</option>
+                    <option value="local">🖥️ Local CogVideoX-2B (your GPU, offline)</option>
+                  </select>
+                </div>
+                <div class="plane-field" id="pollinationsKeyWrap">
+                  <label class="auth-label">Pollinations API Key</label>
+                  <div style="display:flex; gap:0.5rem; align-items:center;">
+                    <div class="auth-input-container" style="flex:1;">
+                      <input id="pc_pollinations_api_key" class="admin-input" type="password" placeholder="sk-... (paid credits - best quality)" />
+                      <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('pc_pollinations_api_key', this)" title="Show/Hide Key">👁️</button>
+                    </div>
+                    <button type="button" class="btn-outline btn-sm" style="flex-shrink:0; white-space:nowrap; height:38px;" onclick="testVideoProvider('pollinations','pc_pollinations_api_key')">⚡ Test Key</button>
+                  </div>
+                </div>
+                <div class="plane-field" id="agnesKeyWrap" style="display:none;">
+                  <label class="auth-label">Agnes AI API Key</label>
+                  <div style="display:flex; gap:0.5rem; align-items:center;">
+                    <div class="auth-input-container" style="flex:1;">
+                      <input id="pc_agnes_api_key" class="admin-input" type="password" placeholder="Free at platform.agnes-ai.com" />
+                      <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('pc_agnes_api_key', this)" title="Show/Hide Key">👁️</button>
+                    </div>
+                    <button type="button" class="btn-outline btn-sm" style="flex-shrink:0; white-space:nowrap; height:38px;" onclick="testVideoProvider('agnes','pc_agnes_api_key')">⚡ Test Key</button>
+                  </div>
+                </div>
+                <div class="plane-field" id="localKeyWrap" style="display:none;">
+                  <label class="auth-label">Local CogVideoX-2B (ComfyUI)</label>
+                  <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:0.6rem; font-size:0.78rem; color:var(--text-muted);">
+                    Runs offline on your RTX GPU via ComfyUI at <code>127.0.0.1:8188</code>. Load the CogVideo model once and the system calls it automatically.
+                    <div style="display:flex; gap:0.5rem; align-items:center; margin-top:0.5rem;">
+                      <div class="auth-input-container" style="flex:1;">
+                        <input id="pc_comfyui_url" class="admin-input" type="text" placeholder="http://127.0.0.1:8188" style="font-size:0.78rem;" />
+                      </div>
+                      <button type="button" class="btn-outline btn-sm" style="flex-shrink:0; white-space:nowrap; height:38px;" onclick="testVideoProvider('local',null)">🧪 Check ComfyUI / GPU</button>
+                    </div>
+                  </div>
+                </div>
               </div>
-              <div><label class="auth-label">Pitch Semitones</label><input id="pc_auto_pitch_semitones" class="admin-input" type="number" step="0.1" min="-6" max="6" /></div>
-              <div style="grid-column:1/-1;"><label class="auth-label">Video Filter FFmpeg String</label><input id="pc_auto_video_filter" class="admin-input" placeholder="eq=contrast=1.06:saturation=1.12:brightness=0.01,unsharp=5:5:0.35:3:3:0.0" /></div>
+              <div class="plane-save-row">
+                <button class="btn-primary btn-sm" onclick="saveSceneGeneration()">💾 Save Scene Generation</button>
+              </div>
+
+              <!-- Saved Keys Display -->
+              <div id="savedKeysDisplay" style="margin-top:1rem; display:none;">
+                <div style="font-size:0.82rem; font-weight:600; color:var(--text-primary); margin-bottom:0.5rem;">🔑 Saved API Keys</div>
+                <div id="savedKeysList" style="display:grid; gap:0.5rem;"></div>
+              </div>
             </div>
           </div>
 
-          <!-- AI System Prompt -->
-          <div class="admin-card" style="margin-bottom:1rem;">
-            <h3 class="admin-card-title">🤖 Main Pipeline AI Prompt</h3>
-            <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:0.5rem;">System prompt used by the semantic ranker for clip evaluation. Leave empty to use the default built-in prompt.</p>
-            <textarea id="pc_pipeline_system_prompt" class="admin-input" rows="8" style="font-family:var(--font-mono); font-size:0.8rem; resize:vertical;" placeholder="Leave empty for default system prompt..."></textarea>
+          <!-- ── PANE 2: Video Specs & Captions ── -->
+          <div id="pipetab-video" class="pipetab-pane">
+            <!-- Video Output Specs -->
+            <div class="plane-card" style="border-left-color:#3b82f6;">
+              <div class="plane-card-head">
+                <h3>🎬 Video Output Specification</h3>
+                <p class="plane-card-desc">Every short is rendered to fill exactly this resolution (no letterboxing/boxing). Applies to both podcast shorts and Script-to-Video scenes.</p>
+              </div>
+               <div class="plane-grid-5">
+                 <div class="plane-field"><label class="auth-label">Width (px)</label><input id="pc_target_width" class="admin-input" type="number" min="320" max="4096" /></div>
+                 <div class="plane-field"><label class="auth-label">Height (px)</label><input id="pc_target_height" class="admin-input" type="number" min="320" max="7680" /></div>
+                 <div class="plane-field"><label class="auth-label">FPS</label><input id="pc_target_fps" class="admin-input" type="number" min="15" max="120" /></div>
+                 <div class="plane-field"><label class="auth-label">Max Duration (s)</label><input id="pc_max_short_duration" class="admin-input" type="number" min="5" max="600" /></div>
+                 <div class="plane-field"><label class="auth-label">Min Duration (s)</label><input id="pc_min_short_duration" class="admin-input" type="number" min="3" max="300" /></div>
+                 <div class="plane-field"><label class="auth-label">Timezone (IANA)</label><input id="pc_timezone" class="admin-input" type="text" placeholder="Asia/Kolkata" /></div>
+               </div>
+            </div>
+
+            <!-- Caption Settings -->
+            <div class="plane-card" style="border-left-color:#ef4444;">
+              <div class="plane-card-head">
+                <h3>💬 Caption Rendering</h3>
+                <p class="plane-card-desc">Styling and timing for the word-by-word captions burned onto each short.</p>
+              </div>
+              <div class="plane-grid-7">
+                <div class="plane-field"><label class="auth-label">Font Size</label><input id="pc_caption_font_size" class="admin-input" type="number" min="12" max="200" /></div>
+                <div class="plane-field"><label class="auth-label">Max Words/Chunk</label><input id="pc_caption_max_words" class="admin-input" type="number" min="1" max="15" /></div>
+                <div class="plane-field"><label class="auth-label">Min Words/Chunk</label><input id="pc_caption_min_words" class="admin-input" type="number" min="1" max="10" /></div>
+                <div class="plane-field"><label class="auth-label">Max Lines</label><input id="pc_caption_max_lines" class="admin-input" type="number" min="1" max="5" /></div>
+                <div class="plane-field"><label class="auth-label">Max Width (px)</label><input id="pc_caption_max_width" class="admin-input" type="number" min="200" max="1080" /></div>
+                <div class="plane-field"><label class="auth-label">Y Position</label><input id="pc_caption_y" class="admin-input" type="number" min="100" max="1920" /></div>
+                <div class="plane-field"><label class="auth-label">Text Color (R,G,B)</label><input id="pc_caption_text_color" class="admin-input" placeholder="255,255,255" /></div>
+                <div class="plane-field"><label class="auth-label">Highlight Color (R,G,B)</label><input id="pc_caption_highlight_color" class="admin-input" placeholder="255,230,0" /></div>
+                <div class="plane-field"><label class="auth-label">Outline Color (R,G,B)</label><input id="pc_caption_outline_color" class="admin-input" placeholder="0,0,0" /></div>
+                <div class="plane-field"><label class="auth-label">Outline Width</label><input id="pc_caption_outline_width" class="admin-input" type="number" min="0" max="20" /></div>
+                <div class="plane-field"><label class="auth-label">Start Padding (s)</label><input id="pc_caption_start_padding" class="admin-input" type="number" step="0.01" min="0" max="2" /></div>
+                <div class="plane-field"><label class="auth-label">End Padding (s)</label><input id="pc_caption_end_padding" class="admin-input" type="number" step="0.01" min="0" max="2" /></div>
+                <div class="plane-field"><label class="auth-label">Max Duration (s)</label><input id="pc_caption_max_duration" class="admin-input" type="number" step="0.1" min="0.5" max="10" /></div>
+                <div class="plane-field"><label class="auth-label">Min Duration (s)</label><input id="pc_caption_min_duration" class="admin-input" type="number" step="0.1" min="0.1" max="5" /></div>
+              </div>
+            </div>
+
+            <!-- Enhancement -->
+            <div class="plane-card" style="border-left-color:#06b6d4;">
+              <div class="plane-card-head">
+                <h3>✨ Auto Enhancement</h3>
+                <p class="plane-card-desc">Post-processing filters applied to every rendered short.</p>
+              </div>
+              <div class="plane-grid-enhancement">
+                <div class="plane-field" style="display:flex; align-items:center; gap:0.5rem; flex-direction:row;">
+                  <input id="pc_auto_color_filter_enabled" type="checkbox" style="width:18px; height:18px; cursor:pointer;" />
+                  <label class="auth-label" style="margin:0; cursor:pointer;" for="pc_auto_color_filter_enabled">Enable Color Filter</label>
+                </div>
+                <div class="plane-field" style="display:flex; align-items:center; gap:0.5rem; flex-direction:row;">
+                  <input id="pc_auto_pitch_shift_enabled" type="checkbox" style="width:18px; height:18px; cursor:pointer;" />
+                  <label class="auth-label" style="margin:0; cursor:pointer;" for="pc_auto_pitch_shift_enabled">Enable Pitch Shift</label>
+                </div>
+                <div class="plane-field"><label class="auth-label">Pitch Semitones</label><input id="pc_auto_pitch_semitones" class="admin-input" type="number" step="0.1" min="-6" max="6" /></div>
+                <div class="plane-field" style="grid-column:1/-1;"><label class="auth-label">Video Filter FFmpeg String</label><input id="pc_auto_video_filter" class="admin-input" placeholder="eq=contrast=1.06:saturation=1.12:brightness=0.01,unsharp=5:5:0.35:3:3:0.0" /></div>
+              </div>
+            </div>
           </div>
 
-          <!-- Scoring Weights (Collapsible) -->
-          <details class="admin-card" style="margin-bottom:1rem;">
-            <summary style="cursor:pointer; font-weight:700; font-size:0.95rem; color:var(--text-primary);">⚖️ Scoring Weights (Advanced) — 28 Parameters</summary>
-            <p style="font-size:0.82rem; color:var(--text-muted); margin:0.5rem 0;">Adjust the heuristic scoring weights for clip selection. Higher values = stronger signal.</p>
-            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:0.6rem; margin-top:0.75rem;" id="scoringWeightsGrid"></div>
-          </details>
+          <!-- ── PANE 3: Clip Selection & Strategy ── -->
+          <div id="pipetab-clips" class="pipetab-pane">
+            <div class="plane-card" style="border-left-color:#f59e0b;">
+              <div class="plane-card-head">
+                <h3>✂️ Clip Selection Parameters</h3>
+                <p class="plane-card-desc">Controls how candidate viral clips are extracted, scored, and distributed across the source media.</p>
+              </div>
+              <div class="plane-grid-clip">
+                <div class="plane-field"><label class="auth-label">Min Clip Duration (s)</label><input id="pc_clip_min_duration" class="admin-input" type="number" step="0.5" min="3" max="120" /></div>
+                <div class="plane-field"><label class="auth-label">Max Clip Duration (s)</label><input id="pc_clip_max_duration" class="admin-input" type="number" step="0.5" min="5" max="300" /></div>
+                <div class="plane-field"><label class="auth-label">Top N Candidates</label><input id="pc_clip_top_n" class="admin-input" type="number" min="1" max="100" /></div>
+                <div class="plane-field"><label class="auth-label">Min Score</label><input id="pc_clip_min_score" class="admin-input" type="number" step="0.5" min="0" max="100" /></div>
+                <div class="plane-field"><label class="auth-label">Min Separation (s)</label><input id="pc_clip_min_separation" class="admin-input" type="number" step="1" min="0" max="600" /></div>
+                <div class="plane-field"><label class="auth-label">Step Size (s)</label><input id="pc_clip_step_size" class="admin-input" type="number" step="0.1" min="0.5" max="10" /></div>
+                <div class="plane-field"><label class="auth-label">Overlap Threshold</label><input id="pc_clip_overlap_threshold" class="admin-input" type="number" step="0.05" min="0" max="1" /></div>
+                <div class="plane-field plane-field-strategy">
+                  <label class="auth-label">Distribution Strategy</label>
+                  <select id="pc_clip_distribution_strategy" class="admin-input">
+                    <option value="spaced_top">Spaced Top (Balanced Highlights)</option>
+                    <option value="bucketed">Bucketed (Chronological Spread)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ── PANE 4: AI Scoring & Weights ── -->
+          <div id="pipetab-ai" class="pipetab-pane">
+            <!-- Semantic Ranking -->
+            <div class="plane-card" style="border-left-color:#8b5cf6;">
+              <div class="plane-card-head">
+                <h3>🧠 Semantic Ranking Defaults</h3>
+                <p class="plane-card-desc">Default parameters for the AI semantic ranking and retention hook evaluation.</p>
+              </div>
+              <div class="plane-grid-4">
+                <div class="plane-field"><label class="auth-label">Pool Size</label><input id="pc_semantic_default_pool_size" class="admin-input" type="number" min="10" max="500" /></div>
+                <div class="plane-field"><label class="auth-label">Min Score</label><input id="pc_semantic_min_score" class="admin-input" type="number" step="0.5" min="0" max="100" /></div>
+                <div class="plane-field"><label class="auth-label">Top N</label><input id="pc_semantic_default_top_n" class="admin-input" type="number" min="1" max="100" /></div>
+                <div class="plane-field"><label class="auth-label">Separation (s)</label><input id="pc_semantic_default_separation" class="admin-input" type="number" step="1" min="0" max="600" /></div>
+              </div>
+            </div>
+
+            <!-- AI System Prompt -->
+            <div class="plane-card" style="border-left-color:#64748b;">
+              <div class="plane-card-head">
+                <h3>🤖 Main Pipeline AI Prompt</h3>
+                <p class="plane-card-desc">System prompt used by the semantic ranker for clip evaluation. Leave empty to use the default built-in prompt.</p>
+              </div>
+              <div style="margin-top:0.75rem;">
+                <textarea id="pc_pipeline_system_prompt" class="admin-input" rows="8" style="font-family:var(--font-mono); font-size:0.8rem; resize:vertical;" placeholder="Leave empty for default system prompt..."></textarea>
+              </div>
+            </div>
+
+            <!-- Scoring Weights (Collapsible) -->
+            <details class="plane-card" style="border-left-color:#a855f7;" open>
+              <summary style="cursor:pointer; font-weight:800; font-size:0.98rem; color:var(--text-primary);">⚖️ Scoring Weights (Advanced) — 28 Parameters</summary>
+              <p class="plane-card-desc" style="margin:0.5rem 0 0;">Adjust the heuristic scoring weights for clip selection. Higher values = stronger signal.</p>
+              <div class="plane-field-grid" id="scoringWeightsGrid"></div>
+            </details>
+          </div>
         </section>
 
         <!-- ── 6. Quota Tab ── -->
@@ -580,7 +696,7 @@
                 <thead>
                   <tr>
                     <th style="width:36px;"><input type="checkbox" id="selectAllAudit" onchange="toggleSelectAllAudit(this.checked)" /></th>
-                    <th>Time (UTC)</th>
+                    <th>Time</th>
                     <th>Severity</th>
                     <th>Category</th>
                     <th>Action</th>
@@ -713,9 +829,9 @@
         </div>
         <div class="auth-field">
           <label class="auth-label">API Key</label>
-          <div style="position:relative; display:flex; align-items:center;">
-            <input id="modal_provider_api_key" class="admin-input" type="password" placeholder="sk-... or leave empty for local" style="padding-right:2.5rem;" />
-            <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('modal_provider_api_key', this)" style="right:10px;">👁️</button>
+          <div class="auth-input-container">
+            <input id="modal_provider_api_key" class="admin-input" type="password" placeholder="sk-... or leave empty for local" />
+            <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('modal_provider_api_key', this)" title="Show/Hide Key">👁️</button>
           </div>
         </div>
         <div class="auth-field">

@@ -33,12 +33,18 @@ from src.config import (
     SEMANTIC_JSON_FILENAME,
     TEMP_DIR,
     TRANSCRIPT_JSON_FILENAME,
+    get_video_spec_config,
 )
 from src.logger import get_logger
 
 log = get_logger(__name__)
 
 PHASE4_TEMP_DIR = TEMP_DIR / "phase4"
+
+
+def _get_video_spec():
+    spec = get_video_spec_config()
+    return int(spec["target_width"]), int(spec["target_height"])
 
 
 def _fmt_ts(secs: float) -> str:
@@ -149,8 +155,11 @@ def _validate_output(video_path: Path, expected_duration: Optional[float] = None
     is_duration_consistent = (diff <= 0.10)
 
     # Validation checks
-    is_9_16 = (width == 1080 and height == 1920) or (
-        height > 0 and abs((width / height) - (9.0 / 16.0)) < 0.02
+    _vspec = _get_video_spec()
+    exp_w, exp_h = _vspec[0], _vspec[1]
+    exp_aspect = (exp_w / exp_h) if exp_h else 0.0
+    is_9_16 = (width == exp_w and height == exp_h) or (
+        height > 0 and exp_aspect and abs((width / height) - exp_aspect) < 0.02
     )
     is_audio_ok = acodec in ("aac", "mp3", "opus", "vorbis") and audio_stream != {}
     is_duration_ok = is_duration_consistent
@@ -263,7 +272,8 @@ def render_clip(
     crop_plan = compute_crop_plan(frame_data, src_w, src_h)
     if not quiet:
         print(f"       Source size: {src_w}×{src_h}")
-        print("       Output size: 1080×1920")
+        ow, oh = _get_video_spec()
+        print(f"       Output size: {ow}×{oh}")
         print(f"       Crop windows: {len(crop_plan)}")
 
     # ── Step 4: Render reframed video ─────────────────────────────────────────
@@ -287,7 +297,50 @@ def render_clip(
     if trans_path.exists():
         with trans_path.open(encoding="utf-8") as fh:
             trans_data = json.load(fh)
-        segments = trans_data.get("segments", [])
+        segments = trans_data.get("segments", []) or []
+
+    if not segments and not quiet:
+        print("       ⚠ Main transcript has no segments — attempting on-demand re-transcription of clip audio…")
+
+    if not segments and source_clip_path.exists():
+        try:
+            import tempfile
+            from app.transcriber import transcribe_with_faster_whisper
+            with tempfile.TemporaryDirectory() as _td:
+                clip_audio = Path(_td) / "clip_audio.mp3"
+                from src.config import FFMPEG_BIN
+                import subprocess
+                _ac = subprocess.run(
+                    [FFMPEG_BIN, "-y", "-i", str(source_clip_path), "-vn", "-ac", "1", "-ar", "16000", str(clip_audio)],
+                    capture_output=True, timeout=60,
+                )
+                if clip_audio.exists() and clip_audio.stat().st_size > 0:
+                    from src.config import get_setting
+                    _fw_model = get_setting("faster_whisper_model", "base")
+                    _device = get_setting("faster_whisper_device", "auto")
+                    _compute = get_setting("faster_whisper_compute_type", "int8")
+                    _segs, _ = transcribe_with_faster_whisper(
+                        audio_path=clip_audio,
+                        model_name=_fw_model,
+                        language_code=None,
+                        device=_device,
+                        compute_type=_compute,
+                    )
+                    for s in _segs:
+                        segments.append({
+                            "start": s.start,
+                            "end": s.end,
+                            "text": s.text,
+                            "words": s.words,
+                        })
+                    if not quiet:
+                        print(f"       ✓ On-demand transcription recovered {len(segments)} segments")
+        except Exception as _e:
+            if not quiet:
+                print(f"       ⚠ On-demand transcription failed: {_e}")
+
+    if not segments and not quiet:
+        print("       ⚠ No transcript available — captions will be skipped for this clip.")
 
     caption_chunks = build_caption_chunks(
         segments=segments,
@@ -306,6 +359,47 @@ def render_clip(
         out_path=final_out,
         audio_source=reframed_path,
     )
+
+    # ── Final 9:16 Re-encode: Guarantee no black borders (1080x1920 full-frame) ──
+    if not quiet:
+        print("  [6/6] Final 9:16 re-encode (force full-frame, no black bars)…")
+    from src.config import FFMPEG_BIN, get_video_spec_config
+    _vspec = get_video_spec_config()
+    _W = int(_vspec.get("target_width", 1080))
+    _H = int(_vspec.get("target_height", 1920))
+    _reenc_path = final_out.with_name(f"_re_{final_out.name}")
+    _reenc_cmd = [
+        FFMPEG_BIN, "-y", "-threads", "0",
+        "-i", str(final_out),
+        "-vf", (
+            f"scale={_W}:{_H}:force_original_aspect_ratio=increase,"
+            f"crop={_W}:{_H}"
+        ),
+        "-c:v", "libx264",
+        "-crf", "18",
+        "-preset", "fast",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        str(_reenc_path),
+    ]
+    try:
+        _reproc = subprocess.run(_reenc_cmd, capture_output=True, text=True, timeout=180)
+        if _reproc.returncode == 0 and _reenc_path.exists() and _reenc_path.stat().st_size > 0:
+            _reenc_path.replace(final_out)
+            if not quiet:
+                print(f"       ✓ Final output guaranteed at {_W}x{_H} (full-frame, no black bars)")
+        else:
+            if not quiet:
+                print(f"       ⚠ Final re-encode failed; using previous output. ({_reproc.stderr[:200] if _reproc.stderr else 'no stderr'})")
+            if _reenc_path.exists():
+                _reenc_path.unlink(missing_ok=True)
+    except Exception as _re_err:
+        if not quiet:
+            print(f"       ⚠ Final re-encode exception: {_re_err}")
+        if _reenc_path.exists():
+            _reenc_path.unlink(missing_ok=True)
+
     if not quiet:
         print(f"       Final output: {final_out}")
 
@@ -507,7 +601,7 @@ def render_batch(
             print(f"    Actual Dur   : {v.get('actual_duration', '?')}s")
             print(f"    Duration Diff: {v.get('duration_difference', '?')}s")
             print(f"    Face         : {'PASS' if face_ok else 'FAIL'} ({clip_res['face_coverage_pct']:.1f}%)")
-            print(f"    9:16         : {'PASS' if is_9_16 else 'FAIL'}")
+            print(f"    Aspect       : {'PASS' if is_9_16 else 'FAIL'}")
             print(f"    Captions     : {'PASS' if has_captions else 'FAIL'} ({clip_res['caption_chunks']} chunks)")
             print(f"    Audio        : {'PASS' if is_audio else 'FAIL'}")
             print(f"    Duration     : {'PASS' if dur_ok else 'FAIL'}")
@@ -517,7 +611,7 @@ def render_batch(
                 if not face_ok:
                     failed_reasons.append(f"Face coverage low ({clip_res['face_coverage_pct']:.1f}%)")
                 if not is_9_16:
-                    failed_reasons.append(f"Not 9:16 ({v.get('resolution')})")
+                    failed_reasons.append(f"Wrong aspect ratio ({v.get('resolution')})")
                 if not is_audio:
                     failed_reasons.append("Audio validation failed")
                 if not has_captions:

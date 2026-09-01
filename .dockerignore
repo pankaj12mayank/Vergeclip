@@ -1,0 +1,35 @@
+# Secrets — never copy into the image
+.env
+.env.local
+
+# Python build/runtime artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.venv/
+venv/
+*.log
+server_out.txt
+server_err.txt
+
+# Version control
+.git/
+.gitignore
+
+# Runtime data / media — created at startup, kept local
+temp/
+logs/
+input/
+output/
+storage/
+data/users.db
+data/*.db
+
+# Optional local GPU runtime — NOT part of the web container (uses cloud providers)
+comfyui/
+
+# Node / OS
+node_modules/
+.DS_Store
+Thumbs.db

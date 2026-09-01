@@ -1,7 +1,10 @@
+# Render Blueprint — Vergeclip AI (Docker deployment)
+# Set long-lived secrets (JWT_SECRET_KEY, API keys) in the Render dashboard
+# Environment → Secrets rather than committing them here.
 services:
   - type: web
-    name: podcast-shorts-generator
-    env: docker
+    name: vergeclip
+    runtime: docker
     plan: starter
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
@@ -11,3 +14,25 @@ services:
         value: 5000
       - key: HOST
         value: 0.0.0.0
+      # AUTH: set to true to require login for pipeline/config/delete
+      - key: AUTH_REQUIRED
+        value: "false"
+      # Optional AI providers (can also be configured live in Admin Portal)
+      - key: VIDEOSAILOR_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: ASSEMBLYAI_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: RANKING_PROVIDER
+        value: gemini
+      # JWT_SECRET_KEY is REQUIRED for auth: generate with
+      #   python -c "import secrets; print(secrets.token_urlsafe(32))"
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: DISK
+        value: data

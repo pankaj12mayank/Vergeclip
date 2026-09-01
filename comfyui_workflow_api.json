@@ -1,0 +1,83 @@
+{
+  "1": {
+    "class_type": "DownloadAndLoadCogVideoModel",
+    "inputs": {
+      "model": "THUDM/CogVideoX-2b",
+      "precision": "fp16",
+      "quantization": "disabled",
+      "enable_sequential_cpu_offload": true,
+      "attention_mode": "sdpa",
+      "load_device": "main_device"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "t5xxl_fp8_e4m3fn.safetensors",
+      "type": "sd3"
+    }
+  },
+  "3": {
+    "class_type": "CogVideoTextEncode",
+    "inputs": {
+      "clip": ["2", 0],
+      "prompt": "{prompt}",
+      "strength": 1.0,
+      "force_offload": true
+    }
+  },
+  "4": {
+    "class_type": "CogVideoTextEncode",
+    "inputs": {
+      "clip": ["2", 0],
+      "prompt": "",
+      "strength": 1.0,
+      "force_offload": true
+    }
+  },
+  "5": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": "{width}",
+      "height": "{height}",
+      "batch_size": 1
+    }
+  },
+  "6": {
+    "class_type": "CogVideoSampler",
+    "inputs": {
+      "model": ["1", 0],
+      "positive": ["3", 0],
+      "negative": ["4", 0],
+      "samples": ["5", 0],
+      "num_frames": 49,
+      "steps": 15,
+      "cfg": 6,
+      "seed": "{seed}",
+      "scheduler": "CogVideoXDDIM"
+    }
+  },
+  "7": {
+    "class_type": "CogVideoDecode",
+    "inputs": {
+      "vae": ["1", 1],
+      "samples": ["6", 0],
+      "enable_vae_tiling": true,
+      "tile_sample_min_height": 240,
+      "tile_sample_min_width": 360,
+      "tile_overlap_factor_height": 0.2,
+      "tile_overlap_factor_width": 0.2,
+      "auto_tile_size": true
+    }
+  },
+  "8": {
+    "class_type": "SaveWEBM",
+    "inputs": {
+      "images": ["7", 0],
+      "filename_prefix": "vergeclip",
+      "codec": "vp9",
+      "fps": 8,
+      "crf": 30
+    }
+  }
+}

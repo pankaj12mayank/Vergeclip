@@ -339,6 +339,49 @@ async def login(payload: Request):
     }
 
 
+@app.post("/api/auth/refresh", tags=["auth"])
+async def refresh_token(request: Request):
+    """Refresh an existing token if it's within 30 minutes of expiry."""
+    from src.auth import EXPIRE_MINUTES, decode_token, create_access_token, get_current_user
+    from src.logger import log_system_event
+
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing token")
+    token = auth.split(" ", 1)[1].strip()
+
+    try:
+        payload = decode_token(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    # Check if token is within 30 minutes of expiry — only refresh if close to expiring
+    exp_ms = payload.get("exp", 0) * 1000
+    time_left_ms = exp_ms - __import__('time').time() * 1000
+    if time_left_ms > 30 * 60 * 1000:  # More than 30 minutes left
+        return {"success": True, "message": "Token still valid", "access_token": token, "expires_in": int(time_left_ms / 1000)}
+
+    # Generate new token
+    new_token = create_access_token({
+        "sub": payload.get("sub"),
+        "username": payload.get("username"),
+        "email": payload.get("email"),
+        "role": payload.get("role"),
+    })
+    log_system_event("AUTH", "Token Refreshed", f"Token refreshed for user {payload.get('username')}", user_id=int(payload.get("sub", 0)), severity="INFO")
+    return {
+        "success": True,
+        "message": "Token refreshed",
+        "access_token": new_token,
+        "token_type": "bearer",
+        "expires_in": EXPIRE_MINUTES * 60,
+    }
+
+
 @app.get("/api/auth/me", tags=["auth"])
 async def me(request: Request):
     from src.auth import get_current_user
@@ -1010,7 +1053,7 @@ async def admin_reset_device_trial(device_id: str, request: Request):
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
-ALLOWED_CONFIG_KEYS = {"VIDEOSAILOR_API_KEY", "ASSEMBLYAI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "RANKING_PROVIDER", "GEMINI_MODEL", "GROQ_API_KEY", "TRANSCRIPTION_PROVIDER", "FREE_TIER_MONTHLY_LIMIT", "MAX_VIDEO_DURATION_MINUTES", "STORAGE_PATH"}
+ALLOWED_CONFIG_KEYS = {"VIDEOSAILOR_API_KEY", "ASSEMBLYAI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "RANKING_PROVIDER", "GEMINI_MODEL", "GROQ_API_KEY", "TRANSCRIPTION_PROVIDER", "FREE_TIER_MONTHLY_LIMIT", "MAX_VIDEO_DURATION_MINUTES", "MAX_SHORTS_PER_VIDEO", "STORAGE_PATH"}
 
 
 @app.get("/api/config", tags=["config"])
@@ -1067,7 +1110,7 @@ async def save_config(payload: Request):
 
         save_api_config(filtered)
         # Also persist system-limit keys to DB so get_setting() picks them up dynamically
-        _db_keys = {"FREE_TIER_MONTHLY_LIMIT", "MAX_VIDEO_DURATION_MINUTES", "STORAGE_PATH"}
+        _db_keys = {"FREE_TIER_MONTHLY_LIMIT", "MAX_VIDEO_DURATION_MINUTES", "MAX_SHORTS_PER_VIDEO", "STORAGE_PATH"}
         for _k in _db_keys:
             if _k in filtered:
                 set_setting(_k, filtered[_k])
@@ -1261,6 +1304,7 @@ async def admin_list_prompts(request: Request):
                     "user_template": p.user_template,
                     "model": p.model,
                     "temp": p.temp,
+                    "category": p.category or "youtube_shorts",
                     "is_active": p.is_active,
                     "created_at": p.created_at.isoformat() if p.created_at else None,
                 }
@@ -1799,6 +1843,10 @@ async def admin_save_pipeline_config(request: Request):
         "auto_color_filter_enabled", "auto_video_filter", "auto_pitch_shift_enabled", "auto_pitch_semitones",
         # System prompt
         "pipeline_system_prompt",
+        # Scene generation
+        "video_gen_provider", "pollinations_api_key", "agnes_api_key", "comfyui_url",
+        # Timezone
+        "timezone",
     }
 
     filtered = {}
@@ -1910,6 +1958,43 @@ async def admin_reset_pipeline_config(request: Request):
 
     from src.config import get_all_pipeline_config
     return {"success": True, "message": "All pipeline settings reset to defaults!", "config": get_all_pipeline_config()}
+
+
+@app.post("/api/admin/config/delete-key", tags=["admin"])
+async def admin_delete_config_key(request: Request):
+    """Clear a saved API key / secret from the DB (sets it to empty so it reads as not-configured).
+
+    Supports deleting Pollinations / Agnes / cloud provider keys from the Admin UI.
+    """
+    admin = _require_admin(request)
+    from src.config import set_setting, invalidate_settings_cache
+    from src.logger import log_system_event
+
+    body = await request.json()
+    key = (body.get("key") or "").strip().lower()
+
+    # Only allow known secret/config keys to be deleted (never accept arbitrary keys).
+    deletable = {
+        "pollinations_api_key", "agnes_api_key",
+        "assemblyai_api_key", "groq_api_key", "videosailor_api_key",
+        "pollinations_api_key_is_set",
+    }
+    if key not in deletable:
+        raise HTTPException(status_code=400, detail=f"Key '{key}' is not deletable through this endpoint.")
+
+    set_setting(key, "", admin_id=admin.id)
+    invalidate_settings_cache()
+    log_system_event("CONFIG", "API Key Removed", f"Removed saved API key '{key}'", severity="WARNING")
+
+    from src.config import get_all_pipeline_config, get_setting
+    cfg = get_all_pipeline_config()
+    return {
+        "success": True,
+        "message": f"API key removed: {key}",
+        "config": cfg,
+        "pollinations_api_key": get_setting("pollinations_api_key", ""),
+        "agnes_api_key": get_setting("agnes_api_key", ""),
+    }
 
 
 @app.post("/api/admin/trials/reset", tags=["admin"])
@@ -2192,7 +2277,7 @@ async def admin_get_jobs(
             q = q.filter(Job.status == status.lower())
         if search:
             s_term = f"%{search.lower()}%"
-            q = q.filter((Job.id.ilike(s_term)) | (Job.youtube_url.ilike(s_term)))
+            q = q.filter((Job.id.ilike(s_term)) | (Job.youtube_url.ilike(s_term)) | (Job.script_text.ilike(s_term)) | (Job.job_type.ilike(s_term)))
 
         total = q.count()
         rows = q.order_by(Job.created_at.desc()).offset((page - 1) * limit).limit(limit).all()
@@ -2203,7 +2288,9 @@ async def admin_get_jobs(
                 "id": j.id,
                 "user_id": j.user_id,
                 "user_name": u_name or "Guest / System",
+                "job_type": j.job_type or "youtube",
                 "youtube_url": j.youtube_url,
+                "script_text": (j.script_text or "")[:120],
                 "status": j.status,
                 "progress_percent": j.progress_percent,
                 "error_message": j.error_message,
@@ -2275,6 +2362,83 @@ async def admin_clear_finished_jobs(request: Request):
 @app.post("/api/pipeline/generate-from-topic", tags=["pipeline"])
 async def generate_from_topic(request: Request):
     """Generate viral short script and video pipeline from user prompt/topic (No video needed mode)."""
+    from src.auth import AUTH_REQUIRED, decode_token, get_user_by_id
+    from src.models import SessionLocal
+
+    # Auth check
+    user_id = None
+    is_guest = True
+    if AUTH_REQUIRED:
+        token = None
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            token = auth.split(" ", 1)[1].strip()
+        else:
+            token = request.query_params.get("token") or request.query_params.get("access_token")
+        if token:
+            try:
+                payload = decode_token(token)
+                uid = payload.get("sub")
+                if uid and get_user_by_id(int(uid)):
+                    user_id = int(uid)
+                    is_guest = False
+            except Exception:
+                pass
+
+    # Get device ID for guest trial check
+    device_id = request.headers.get("x-device-id", "").strip()
+    ip = request.client.host if request.client else "unknown"
+
+    # Check admin status
+    is_admin_user = False
+    if not is_guest and user_id:
+        try:
+            from src.models import User as _U
+            _db = SessionLocal()
+            try:
+                _u = _db.query(_U).filter(_U.id == user_id).first()
+                if _u and _u.role == "admin":
+                    is_admin_user = True
+            finally:
+                _db.close()
+        except Exception:
+            pass
+
+    # Device trial check for guests
+    if is_guest and not is_admin_user and device_id:
+        from src.device_trial import check_device_trial, consume_device_trial
+        chk = check_device_trial(device_id, ip)
+        if not chk["allowed"]:
+            raise HTTPException(status_code=403, detail=chk["reason"] + " — please signup/login for 5 scripts/month.")
+        consume_device_trial(device_id, ip)
+    elif is_guest and not is_admin_user and not device_id:
+        fallback = f"ip_{ip}_{request.headers.get('user-agent','')[:30]}"
+        if len(fallback) > 10:
+            from src.device_trial import check_device_trial
+            chk = check_device_trial(fallback, ip)
+            if not chk["allowed"]:
+                raise HTTPException(status_code=403, detail=chk["reason"])
+
+    # For guest, assign to admin user for FK
+    if is_guest:
+        from src.models import User as _GuestUser
+        _db = SessionLocal()
+        try:
+            admin = _db.query(_GuestUser).filter(_GuestUser.username == "admin").first()
+            user_id = admin.id if admin else 1
+        finally:
+            _db.close()
+
+    # Quota check for logged-in users
+    remaining = None
+    if not is_guest and user_id:
+        from src.quota import check_and_increment_quota
+        _db = SessionLocal()
+        try:
+            remaining = check_and_increment_quota(user_id, _db)
+        finally:
+            _db.close()
+
     body = await request.json()
     topic = str(body.get("topic") or "").strip()
     niche = str(body.get("niche") or "General Viral").strip()
@@ -2290,24 +2454,30 @@ async def generate_from_topic(request: Request):
     from src.logger import log_system_event
 
     sys_prompt = (
-        "You are an expert AI scriptwriter for viral 45-60 second YouTube Shorts and TikToks. "
-        "Write an explosive, retention-optimized short script with timestamped Hook, Problem, 3 Secrets, Twist, and CTA."
+        "You are a master short-form video scriptwriter for viral 45-60 second YouTube Shorts. "
+        "Write clean, punchy scripts with structured sections: HOOK, PROBLEM, 3 SECRETS, TWIST, CTA. "
+        "No emojis. Short sentences under 12 words. Pure spoken English."
     )
+    user_template = None
     _db = SessionLocal()
     try:
         p_row = _db.query(Prompt).filter(Prompt.name == "Topic-to-Viral Script Pipeline", Prompt.is_active == True).first()
         if p_row and p_row.system_prompt:
             sys_prompt = p_row.system_prompt
+        if p_row and p_row.user_template:
+            user_template = p_row.user_template
     finally:
         _db.close()
 
-    user_req = f"""Generate a viral {duration}-second short script on this topic:
-TOPIC: {topic}
+    if user_template:
+        user_req = user_template.format(topic=topic, niche=niche, tone=tone, duration=duration)
+    else:
+        user_req = f"""TOPIC: {topic}
 NICHE: {niche}
 TONE: {tone}
 TARGET DURATION: {duration} seconds
 
-Format with clear [00:00 - 00:03] Hook, Problem, 3 Insights, Twist, and Call-to-Action, followed by Viral Title and 10 Hashtags."""
+Write a complete script following the structured format. Output ONLY the script, no explanations."""
 
     script_result = None
     try:
@@ -2318,28 +2488,43 @@ Format with clear [00:00 - 00:03] Hook, Problem, 3 Insights, Twist, and Call-to-
         log_system_event("PIPELINE", "Topic Script Fallback", f"LLM error: {e}, using template", severity="WARN")
 
     if not script_result:
-        # High quality fallback template if LLM key not configured
-        script_result = f"""🔥 VIRAL TITLE: The Secret Truth About {topic} 🤯
+        # Clean fallback template if LLM key not configured
+        script_result = f"""TITLE: The Hidden Truth About {topic}
 
-HOOK (00:00 - 00:03):
-"Almost nobody knows this, but {topic} is completely misunderstood..."
+HOOK
+TIMESTAMP: 00:00 - 00:04
+VISUAL: Bold white text, rapid zoom-in on dark background
+VOICEOVER: Almost nobody knows this about {topic}.
 
-PROBLEM (00:03 - 00:12):
-"99% of people struggle with this because they follow outdated advice that keeps them stuck."
+PROBLEM
+TIMESTAMP: 00:04 - 00:12
+VISUAL: Text slides in from left, gradient overlay
+VOICEOVER: Most people get this completely wrong. They follow advice that keeps them stuck and confused.
 
-CORE VALUE (00:12 - 00:38):
-"Here are 3 game-changing rules:
-1. Stop overcomplicating the basics.
-2. Focus on high-leverage execution daily.
-3. Master your emotional control before taking action."
+SECRET ONE
+TIMESTAMP: 00:12 - 00:22
+VISUAL: Number "1" animates in, text reveals letter by letter
+VOICEOVER: Rule number one. Stop overcomplicating the basics. Simple actions done daily beat complex strategies done once.
 
-TWIST (00:38 - 00:48):
-"Once you apply this one subtle shift, everything accelerates 10x faster."
+SECRET TWO
+TIMESTAMP: 00:22 - 00:32
+VISUAL: Transition wipe, new color scheme
+VOICEOVER: Rule number two. Focus on high-leverage execution. One good action beats ten mediocre ones every single time.
 
-CALL TO ACTION (00:48 - 00:{duration:02d}):
-"Drop a 🔥 in the comments if you agree, and follow for more daily wisdom!"
+SECRET THREE
+TIMESTAMP: 00:32 - 00:42
+VISUAL: Bold text center screen, pulse animation
+VOICEOVER: Rule number three. Master your emotional control. The person who stays calm under pressure wins every time.
 
-📱 HASHTAGS: #shorts #viral #{niche.replace(' ', '').lower()} #mindset #growth #trending"""
+TWIST
+TIMESTAMP: 00:42 - 00:50
+VISUAL: Text flips upside down, color inverts
+VOICEOVER: Once you apply this one shift, everything accelerates. Most people will ignore this. That is exactly why it works.
+
+CTA
+TIMESTAMP: 00:50 - 00:58
+VISUAL: Follow button animation, subscribe bell
+VOICEOVER: Follow for more daily breakdowns that actually change how you think."""
 
     return {
         "success": True,
@@ -2349,6 +2534,525 @@ CALL TO ACTION (00:48 - 00:{duration:02d}):
         "tone": tone,
         "generated_script": script_result,
         "message": "Viral Short Script generated successfully!"
+    }
+
+
+# ── Video Provider Test ─────────────────────────────────────────────────────────
+@app.post("/api/admin/video-provider/test", tags=["admin"])
+async def admin_test_video_provider(request: Request):
+    """Verify a scene/video generation API key works."""
+    _require_admin(request)
+    from src.logger import log_system_event
+
+    body = await request.json()
+    provider = body.get("provider", "").strip().lower()
+    value = body.get("value", "").strip()
+
+    # Fall back to stored key if not provided
+    from src.config import get_setting
+    if not value:
+        value = get_setting({
+            "pollinations": "pollinations_api_key",
+            "agnes": "agnes_api_key",
+        }.get(provider, ""), "")
+
+    if not value:
+        return {"verified": False, "message": "No API key provided for this provider."}
+
+    import urllib.request as _ur
+    import urllib.error as _uerr
+
+    def _probe(url, headers, data=None, timeout=15):
+        req = _ur.Request(url, data=data, headers=headers, method="POST" if data else "GET")
+        with _ur.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read()
+
+    try:
+        if provider == "pollinations":
+            # Probe gen.pollinations.ai — 402 means key is valid but needs credits
+            status, _ = _probe(
+                "https://gen.pollinations.ai/video/test?model=wan-fast&duration=1",
+                headers={"Authorization": f"Bearer {value}", "User-Agent": "Vergeclip/1.0"},
+            )
+            if status == 401:
+                msg = "Invalid Pollinations key (401 Unauthorized)"
+                verified = False
+            elif status == 402:
+                msg = "Pollinations key valid but needs credits (402 Payment Required) — video not available on free tier"
+                verified = False
+            else:
+                msg = f"Pollinations reachable (status {status})"
+                verified = True
+            log_system_event("CONFIG", "Pollinations Test", msg, severity="SUCCESS" if verified else "ERROR")
+            return {"verified": verified, "message": msg}
+
+        elif provider == "agnes":
+            # Probe Agnes by creating a tiny text task
+            import json as _json
+            payload = _json.dumps({
+                "model": "agnes-video-v2.0",
+                "prompt": "a simple test scene",
+                "width": 576,
+                "height": 384,
+                "frame_rate": 10,
+            }).encode("utf-8")
+            status, body_bytes = _probe(
+                "https://apihub.agnes-ai.com/v1/videos",
+                headers={"Authorization": f"Bearer {value}", "Content-Type": "application/json", "User-Agent": "Vergeclip/1.0"},
+                data=payload,
+            )
+            if status in (200, 201):
+                msg = "Agnes AI key valid — video task created ✓"
+                verified = True
+            elif status == 401 or status == 403:
+                msg = "Invalid Agnes AI key (401/403 Unauthorized)"
+                verified = False
+            else:
+                msg = f"Agnes AI responded with status {status}"
+                verified = False
+            log_system_event("CONFIG", "Agnes AI Test", msg, severity="SUCCESS" if verified else "ERROR")
+            return {"verified": verified, "message": msg}
+
+        elif provider == "local":
+            # Check whether a local ComfyUI server is reachable AND has a CogVideo
+            # model available (so generation can actually run).
+            comfy_url = (value or get_setting("comfyui_url", "http://127.0.0.1:8188")).rstrip("/")
+            try:
+                req = _ur.Request(f"{comfy_url}/system_stats", headers={"User-Agent": "Vergeclip/1.0"})
+                with _ur.urlopen(req, timeout=5) as resp:
+                    stats = json.loads(resp.read().decode())
+                # Pull GPU device info from system_stats
+                dev = stats.get("devices", [{}])[0].get("name", "unknown GPU")
+            except Exception as e:
+                log_system_event("CONFIG", "Local ComfyUI Test", f"Not reachable: {e}", severity="ERROR")
+                return {"verified": False, "message": f"ComfyUI is NOT running at {comfy_url}. Start it, then re-check. ({e})"}
+
+            # Check for a CogVideo model
+            cog_models = []
+            try:
+                req = _ur.Request(f"{comfy_url}/object_info", headers={"User-Agent": "Vergeclip/1.0"})
+                with _ur.urlopen(req, timeout=8) as resp:
+                    obj = json.loads(resp.read().decode())
+                chk = obj.get("CheckpointLoaderSimple", {}).get("input", {}).get("required", {}).get("ckpt_name", {}).get(0, [])
+                cog_models = [m for m in chk if "cogvideo" in m.lower() or "cog" in m.lower()]
+            except Exception:
+                pass
+
+            if cog_models:
+                msg = f"ComfyUI running on '{dev}' ✓ with CogVideo model(s): {', '.join(cog_models)} — local generation READY"
+                verified = True
+            else:
+                msg = (f"ComfyUI is running on '{dev}' ✓ BUT no CogVideo model found. "
+                       "Load a CogVideoX-2B checkpoint in ComfyUI first (see setup script).")
+                verified = False
+            log_system_event("CONFIG", "Local ComfyUI Test", msg, severity="SUCCESS" if verified else "WARN")
+            return {"verified": verified, "message": msg}
+
+        return {"verified": False, "message": f"Unknown provider: {provider}"}
+    except _uerr.HTTPError as e:
+        return {"verified": False, "message": f"Provider responded {e.code}: {e.reason}"}
+    except Exception as e:
+        return {"verified": False, "message": f"Connection error: {e}"}
+
+
+# ── Script-to-Video Pipeline ────────────────────────────────────────────────────
+@app.post("/api/pipeline/script-to-video", tags=["pipeline"])
+async def script_to_video(request: Request):
+    from src.auth import AUTH_REQUIRED, decode_token, get_user_by_id
+    from src.models import SessionLocal
+
+    # Auth check
+    user_id = None
+    is_guest = True
+    if AUTH_REQUIRED:
+        token = None
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            token = auth.split(" ", 1)[1].strip()
+        else:
+            token = request.query_params.get("token") or request.query_params.get("access_token")
+        if token:
+            try:
+                payload = decode_token(token)
+                uid = payload.get("sub")
+                if uid and get_user_by_id(int(uid)):
+                    user_id = int(uid)
+                    is_guest = False
+            except Exception:
+                pass
+
+    # Get device ID for guest trial check
+    device_id = request.headers.get("x-device-id", "").strip()
+    ip = request.client.host if request.client else "unknown"
+
+    # Check admin status
+    is_admin_user = False
+    if not is_guest and user_id:
+        try:
+            from src.models import User as _U
+            _db = SessionLocal()
+            try:
+                _u = _db.query(_U).filter(_U.id == user_id).first()
+                if _u and _u.role == "admin":
+                    is_admin_user = True
+            finally:
+                _db.close()
+        except Exception:
+            pass
+
+    # Device trial check for guests
+    if is_guest and not is_admin_user and device_id:
+        from src.device_trial import check_device_trial, consume_device_trial
+        chk = check_device_trial(device_id, ip)
+        if not chk["allowed"]:
+            raise HTTPException(status_code=403, detail=chk["reason"] + " — please signup/login for 5 videos/month.")
+        consume_device_trial(device_id, ip)
+    elif is_guest and not is_admin_user and not device_id:
+        fallback = f"ip_{ip}_{request.headers.get('user-agent','')[:30]}"
+        if len(fallback) > 10:
+            from src.device_trial import check_device_trial
+            chk = check_device_trial(fallback, ip)
+            if not chk["allowed"]:
+                raise HTTPException(status_code=403, detail=chk["reason"])
+
+    # For guest, assign to admin user for FK
+    if is_guest:
+        from src.models import User as _GuestUser
+        _db = SessionLocal()
+        try:
+            admin = _db.query(_GuestUser).filter(_GuestUser.username == "admin").first()
+            user_id = admin.id if admin else 1
+        finally:
+            _db.close()
+
+    # Quota check for logged-in users
+    remaining = None
+    if not is_guest and user_id:
+        from src.quota import check_and_increment_quota
+        _db = SessionLocal()
+        try:
+            remaining = check_and_increment_quota(user_id, _db)
+        finally:
+            _db.close()
+
+    body = await request.json()
+    script_text = str(body.get("script") or "").strip()
+    voice = str(body.get("voice") or "en-US-GuyNeural").strip()
+    rate = str(body.get("rate") or "+0%").strip()
+
+    if not script_text:
+        raise HTTPException(status_code=400, detail="Script text is required.")
+
+    log.info("Script-to-Video: starting for %d chars, voice=%s", len(script_text), voice)
+
+    # ── Parse structured script: extract VOICEOVER lines + section labels ──
+    import re as _re
+
+    def _parse_script(text: str) -> tuple[list[dict], str]:
+        """Parse structured script into sections and extract voiceover text."""
+        sections = []
+        lines = text.strip().split("\n")
+        current_section = None
+        current_data = {}
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+
+            upper = stripped.upper()
+            # Detect section headers
+            if upper in ("HOOK", "PROBLEM", "TWIST", "CTA", "CALL TO ACTION",
+                         "CORE VALUE", "CONCLUSION") or _re.match(r"^(SECRET|INSIGHT)\s+\w+", upper):
+                if current_section and current_data.get("voiceover"):
+                    sections.append(current_data)
+                current_section = upper
+                current_data = {"label": upper, "voiceover": "", "visual": ""}
+            elif upper.startswith("TITLE:"):
+                if current_section and current_data.get("voiceover"):
+                    sections.append(current_data)
+                    current_section = None
+                    current_data = {}
+                current_data["title"] = stripped[6:].strip()
+            elif upper.startswith("TIMESTAMP:"):
+                current_data["timestamp"] = stripped[10:].strip()
+            elif upper.startswith("VISUAL:"):
+                current_data["visual"] = stripped[7:].strip()
+            elif upper.startswith("VOICEOVER:"):
+                vo = stripped[10:].strip()
+                if vo:
+                    current_data["voiceover"] = vo
+            elif upper.startswith("VOICETONE:") or upper.startswith("BACKGROUND"):
+                current_data[upper.split(":")[0].strip()] = stripped.split(":", 1)[1].strip() if ":" in stripped else ""
+            elif current_section and stripped and not any(stripped.startswith(k) for k in ["TIMESTAMP", "VISUAL", "VOICEOVER", "TITLE", "VOICETONE", "BACKGROUND"]):
+                # Continuation of voiceover text
+                if current_data.get("voiceover"):
+                    current_data["voiceover"] += " " + stripped
+
+        if current_section and current_data.get("voiceover"):
+            sections.append(current_data)
+
+        # If no structured sections found, treat entire text as voiceover
+        if not sections:
+            # Strip any metadata lines that leaked in
+            stripped_lines = []
+            for line in text.strip().split("\n"):
+                ln = line.strip()
+                if not ln:
+                    continue
+                lu = ln.upper()
+                # Skip metadata directives that should never be spoken
+                if any(lu.startswith(k) for k in ["TITLE:", "VISUAL:", "TIMESTAMP:", "VOICETONE:", "BACKGROUND"]):
+                    continue
+                # Skip standalone section headers with no voiceover
+                if lu in ("HOOK", "PROBLEM", "TWIST", "CTA", "CALL TO ACTION",
+                          "CORE VALUE", "CONCLUSION") or _re.match(r"^(SECRET|INSIGHT)\s+\w+", lu):
+                    continue
+                stripped_lines.append(ln)
+            sentences = [s.strip() for s in _re.split(r'(?<=[.!?])\s+', " ".join(stripped_lines)) if s.strip()]
+            voiceover_text = " ".join(sentences)
+            sections = [{"label": f"SECTION {i+1}", "voiceover": s, "visual": ""} for i, s in enumerate(sentences)]
+        else:
+            voiceover_text = " ".join(s["voiceover"] for s in sections)
+
+        return sections, voiceover_text
+
+    sections, voiceover_text = _parse_script(script_text)
+
+    if not voiceover_text.strip():
+        raise HTTPException(status_code=400, detail="No voiceover content found in script.")
+
+    log.info("Script-to-Video: parsed %d sections, %d voiceover chars", len(sections), len(voiceover_text))
+
+    # ── Collect visual descriptions + title metadata (never rendered as text) ──
+    visual_descriptions = []
+    title_metadata = ""
+    for sec in sections:
+        visual_descriptions.append(sec.get("visual", ""))
+        if sec.get("title") and not title_metadata:
+            title_metadata = sec["title"]
+
+    log.info("Script-to-Video: visuals=%d, title_meta='%s'", len(visual_descriptions), title_metadata[:40])
+
+    # ── Run TTS + scene generation (video) in parallel ──
+    from src.tts_engine import async_synthesize_speech
+    from src.config import get_setting
+    import uuid, hashlib, threading
+
+    job_id = hashlib.md5(uuid.uuid4().bytes).hexdigest()[:8]
+
+    # Check if any video generation API key is configured
+    from src.config import get_setting
+    import uuid, hashlib, threading
+
+    job_id = hashlib.md5(uuid.uuid4().bytes).hexdigest()[:8]
+
+    # Register Script-to-Video job in DB so it appears in the Job Queue
+    try:
+        from src.models import Job, SessionLocal as _job_sl
+        _jdb = _job_sl()
+        try:
+            existing = _jdb.query(Job).filter(Job.id == job_id).first()
+            if not existing:
+                _job = Job(
+                    id=job_id,
+                    user_id=user_id or 1,
+                    job_type="script_to_video",
+                    script_text=script_text[:500] if script_text else None,
+                    youtube_url=f"Script-to-Video: {script_text[:60]}" if script_text else None,
+                    status="processing",
+                    progress_percent=5,
+                )
+                _jdb.add(_job)
+                _jdb.commit()
+        except Exception:
+            _jdb.rollback()
+        finally:
+            _jdb.close()
+    except Exception:
+        log.warning("Could not register script-to-video job %s in DB", job_id)
+
+    pollinations_key = get_setting("pollinations_api_key", "")
+    agnes_key = get_setting("agnes_api_key", "")
+
+    # Local ComfyUI is always a candidate (offline), so video generation is always
+    # attempted; the chain falls back to PIL generative art if nothing succeeds.
+    has_any_key = True
+
+    if has_any_key:
+        providers_available = []
+        if pollinations_key: providers_available.append("Pollinations.ai")
+        if agnes_key: providers_available.append("Agnes AI")
+        providers_available.append("Local ComfyUI (GPU)")
+        log.info("Script-to-Video: video providers: %s — strict mode: every scene must produce a real AI video", ", ".join(providers_available))
+    else:
+        log.error("Script-to-Video: no video API keys configured — cannot proceed (image/decorative fallback disabled)")
+        raise HTTPException(
+            status_code=400,
+            detail="No video generation API configured. Add Agnes AI / Pollinations key, or start local ComfyUI, in Admin → Scene Generation. Image/decorative fallback is disabled by design.",
+        )
+
+    scene_videos: list = []
+    gen_error: list = []
+
+    from src.config import get_video_spec_config as _vs
+    _vspec = _vs()
+
+    # Generate AI video clips — video_generator auto-selects from available keys
+    from src.video_generator import generate_video_clips_batch
+
+    def _gen_videos():
+        try:
+            scene_videos.extend(generate_video_clips_batch(
+                visual_descriptions,
+                duration=5,
+                width=int(_vspec["target_width"]),
+                height=int(_vspec["target_height"]),
+            ))
+        except Exception as e:
+            log.error("Video generation error: %s", e)
+            gen_error.append(e)
+
+    gen_thread = threading.Thread(target=_gen_videos, daemon=True)
+    gen_thread.start()
+
+    # TTS runs concurrently (await in event loop while scenes generate in thread)
+    try:
+        tts_result = await async_synthesize_speech(voiceover_text, voice=voice, rate=rate)
+    except Exception as e:
+        log.error("TTS failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"TTS generation failed: {e}")
+
+    # Wait for video generation to finish
+    log.info("Script-to-Video: waiting for scene videos (max 10 min)...")
+    for _wait in range(1200):
+        if not gen_thread.is_alive():
+            break
+        import asyncio as _aio
+        await _aio.sleep(0.5)
+
+    if gen_error:
+        log.error("Video generation thread raised: %s", gen_error)
+
+    vid_ok = sum(1 for s in scene_videos if s is not None)
+    log.info("Script-to-Video: %d/%d real AI scene videos generated", vid_ok, len(visual_descriptions))
+
+    if vid_ok == 0:
+        raise HTTPException(
+            status_code=500,
+            detail="No AI video clips were generated. Check that Agnes AI / Pollinations / local ComfyUI is configured and reachable. Image/decorative fallback is disabled.",
+        )
+
+    if vid_ok < len(visual_descriptions):
+        missing = len(visual_descriptions) - vid_ok
+        log.error("Script-to-Video: %d/%d scenes FAILED to generate a video clip — cannot proceed without real AI video", vid_ok, len(visual_descriptions))
+        raise HTTPException(
+            status_code=500,
+            detail=f"AI video generation failed for {missing} scene(s). All scenes must produce a real video clip. Check provider keys + local ComfyUI. Image fallback disabled.",
+        )
+
+    # ── Map TTS segments back to sections ──
+    segments = tts_result.segments
+    section_labels = []
+
+    if len(sections) == len(segments):
+        # Perfect 1:1 mapping
+        for i, sec in enumerate(sections):
+            segments[i]["text"] = sec["voiceover"]
+            section_labels.append(sec.get("label", ""))
+    elif len(sections) > 0 and len(segments) > 0:
+        # Distribute sections across available TTS segments proportionally
+        total_tts_dur = tts_result.duration_secs
+        total_sections = len(sections)
+        dur_per_section = total_tts_dur / total_sections
+
+        new_segments = []
+        for i, sec in enumerate(sections):
+            start = i * dur_per_section
+            end = (i + 1) * dur_per_section
+            vo_words = sec["voiceover"].split()
+            word_dur = dur_per_section / max(1, len(vo_words))
+            new_segments.append({
+                "text": sec["voiceover"],
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "words": [{"text": w, "start": round(start + j * word_dur, 3), "end": round(start + (j + 1) * word_dur, 3)} for j, w in enumerate(vo_words)],
+            })
+            section_labels.append(sec.get("label", ""))
+
+        segments = new_segments
+
+    # ── Render video ──
+    from src.script_video_renderer import render_script_video
+    from src.config import OUTPUT_DIR
+
+    out_name = f"script_{job_id}_001.mp4"
+    try:
+        video_path = render_script_video(
+            tts_audio_path=tts_result.audio_path,
+            segments=segments,
+            output_filename=out_name,
+            output_dir=OUTPUT_DIR,
+            section_labels=section_labels,
+            visual_descriptions=visual_descriptions,
+            scene_videos=scene_videos,
+        )
+    except Exception as e:
+        log.error("Script video render failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Video rendering failed: {e}")
+
+    # 5. Save to GeneratedClip DB (gallery)
+    try:
+        from src.models import GeneratedClip, SessionLocal as _SL
+        _clip_db = _SL()
+        try:
+            _clip = GeneratedClip(
+                job_id=job_id,
+                user_id=user_id or 1,
+                file_path=str(video_path),
+                duration_seconds=tts_result.duration_secs,
+                hook_score=0.0,
+            )
+            _clip_db.add(_clip)
+            _clip_db.commit()
+        finally:
+            _clip_db.close()
+    except Exception as clip_exc:
+        log.warning("Failed to save GeneratedClip record: %s", clip_exc)
+
+    log.info("Script-to-Video: done — %s (%.1fs)", out_name, tts_result.duration_secs)
+
+    # Get file size and video dimensions
+    try:
+        size_bytes = video_path.stat().st_size if video_path.exists() else 0
+    except Exception:
+        size_bytes = 0
+
+    try:
+        import subprocess as _sp
+        probe = _sp.run(
+            [str(Path(r"C:\Users\GUC\AppData\Local\Programs\Python\Python313\Lib\site-packages\imageio_ffmpeg\binaries\ffmpeg-win-x86_64-v7.1.exe")),
+             "-i", str(video_path), "-f", "null", "-"],
+            capture_output=True, text=True, timeout=10
+        )
+        # Parse from stderr
+        import re as _re
+        match = _re.search(r"(\d{3,5})x(\d{3,5})", probe.stderr)
+        vid_width = int(match.group(1)) if match else 1080
+        vid_height = int(match.group(2)) if match else 1920
+    except Exception:
+        vid_width, vid_height = 1080, 1920
+
+    return {
+        "success": True,
+        "filename": out_name,
+        "job_id": job_id,
+        "duration": tts_result.duration_secs,
+        "segments": len(segments),
+        "width": vid_width,
+        "height": vid_height,
+        "size_bytes": size_bytes,
+        "message": f"Video short generated: {out_name}",
     }
 
 
@@ -2788,7 +3492,8 @@ async def delete_output(payload: Request):
         db.close()
 
     try:
-        target.unlink()
+        if target.exists():
+            target.unlink()
         log.info("Deleted %s (user_id=%s)", filename, user_id)
         return {"success": True, "message": f"Deleted {filename}"}
     except Exception as exc:
@@ -2965,6 +3670,13 @@ async def auto_generate(payload: Request):
     url = str(body.get("url", "") or "").strip()
     filename = str(body.get("filename", "") or "").strip()
     num_shorts = _parse_num_shorts(body.get("num_shorts"))
+    # Admin-configured hard cap: at most this many shorts are generated per
+    # video no matter what the client requests. Empty/0 means no cap.
+    from src.config import get_setting as _get_setting
+
+    admin_cap = _parse_num_shorts(_get_setting("MAX_SHORTS_PER_VIDEO", ""))
+    if admin_cap and (num_shorts is None or num_shorts > admin_cap):
+        num_shorts = admin_cap
     clear_existing = body.get("clear_existing", True)
     if isinstance(clear_existing, str):
         clear_existing = clear_existing.lower() not in ("false", "0", "no")
