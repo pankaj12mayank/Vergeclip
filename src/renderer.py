@@ -42,6 +42,20 @@ log = get_logger(__name__)
 PHASE4_TEMP_DIR = TEMP_DIR / "phase4"
 
 
+def caption_burn_enabled() -> bool:
+    """Whether captions should be burned onto Youtube-shorts output.
+
+    Default OFF — the user wants clean 9:16 cuts with no captions. Can be turned
+    on via Admin -> Settings key ``shorts_burn_captions`` = "1"/"true".
+    """
+    try:
+        from src.config import get_setting
+        flag = str(get_setting("shorts_burn_captions", "0")).strip().lower()
+        return flag in ("1", "true", "yes", "on")
+    except Exception:
+        return False
+
+
 def _get_video_spec():
     spec = get_video_spec_config()
     return int(spec["target_width"]), int(spec["target_height"])
@@ -289,102 +303,117 @@ def render_clip(
     if not quiet:
         print(f"       Reframed video: {reframed_path}")
 
-    # ── Step 5: Burn captions ─────────────────────────────────────────────────
-    if not quiet:
-        print("  [5/5] Burning Phase 5 animated captions…")
-
-    segments: list[dict] = []
-    if trans_path.exists():
-        with trans_path.open(encoding="utf-8") as fh:
-            trans_data = json.load(fh)
-        segments = trans_data.get("segments", []) or []
-
-    if not segments and not quiet:
-        print("       ⚠ Main transcript has no segments — attempting on-demand re-transcription of clip audio…")
-
-    if not segments and source_clip_path.exists():
-        try:
-            import tempfile
-            from app.transcriber import transcribe_with_faster_whisper
-            with tempfile.TemporaryDirectory() as _td:
-                clip_audio = Path(_td) / "clip_audio.mp3"
-                from src.config import FFMPEG_BIN
-                import subprocess
-                _ac = subprocess.run(
-                    [FFMPEG_BIN, "-y", "-i", str(source_clip_path), "-vn", "-ac", "1", "-ar", "16000", str(clip_audio)],
-                    capture_output=True, timeout=60,
-                )
-                if clip_audio.exists() and clip_audio.stat().st_size > 0:
-                    from src.config import get_setting
-                    _fw_model = get_setting("faster_whisper_model", "base")
-                    _device = get_setting("faster_whisper_device", "auto")
-                    _compute = get_setting("faster_whisper_compute_type", "int8")
-                    _segs, _ = transcribe_with_faster_whisper(
-                        audio_path=clip_audio,
-                        model_name=_fw_model,
-                        language_code=None,
-                        device=_device,
-                        compute_type=_compute,
-                    )
-                    for s in _segs:
-                        segments.append({
-                            "start": s.start,
-                            "end": s.end,
-                            "text": s.text,
-                            "words": s.words,
-                        })
-                    if not quiet:
-                        print(f"       ✓ On-demand transcription recovered {len(segments)} segments")
-        except Exception as _e:
-            if not quiet:
-                print(f"       ⚠ On-demand transcription failed: {_e}")
-
-    if not segments and not quiet:
-        print("       ⚠ No transcript available — captions will be skipped for this clip.")
-
-    caption_chunks = build_caption_chunks(
-        segments=segments,
-        clip_start=clip_info.start,
-        clip_end=clip_info.end,
-        clip_media_path=source_clip_path,
-        debug=debug_captions,
-    )
-
-    caption_val = validate_caption_chunks(caption_chunks, clip_info.duration)
-
+    # ── Step 5: Burn captions (OFF for Youtube-shorts — clean cuts only) ─────
+    # The user wants Youtube shorts without any captions burned in. We take the
+    # already-reframed 9:16 clip and go straight to the final full-frame encode.
     final_out = OUTPUT_DIR / output_filename
-    render_captions_on_video(
-        input_video=reframed_path,
-        caption_chunks=caption_chunks,
-        out_path=final_out,
-        audio_source=reframed_path,
-    )
+    if not caption_burn_enabled():
+        if not quiet:
+            print("  [5/5] Skipping captions (Youtube shorts = clean cuts, no captions)…")
+        # Directly use the reframed clip as the base for the final encode.
+        _raw_base = reframed_path
+        caption_chunks: list = []
+        caption_val = {"chunks": 0, "ok": True}
+    else:
+        segments: list[dict] = []
+        if trans_path.exists():
+            with trans_path.open(encoding="utf-8") as fh:
+                trans_data = json.load(fh)
+            segments = trans_data.get("segments", []) or []
+
+        if not segments and not quiet:
+            print("       ⚠ Main transcript has no segments — attempting on-demand re-transcription of clip audio…")
+
+        if not segments and source_clip_path.exists():
+            try:
+                import tempfile
+                from app.transcriber import transcribe_with_faster_whisper
+                with tempfile.TemporaryDirectory() as _td:
+                    clip_audio = Path(_td) / "clip_audio.mp3"
+                    from src.config import FFMPEG_BIN
+                    from src.ffmpeg_utils import run_ffmpeg
+                    _ac = run_ffmpeg(
+                        [FFMPEG_BIN, "-y", "-i", str(source_clip_path), "-vn", "-ac", "1", "-ar", "16000", str(clip_audio)],
+                        timeout=90,
+                    )
+                    if clip_audio.exists() and clip_audio.stat().st_size > 0:
+                        from src.config import get_setting
+                        _fw_model = get_setting("faster_whisper_model", "base")
+                        _device = get_setting("faster_whisper_device", "auto")
+                        _compute = get_setting("faster_whisper_compute_type", "int8")
+                        _segs, _ = transcribe_with_faster_whisper(
+                            audio_path=clip_audio,
+                            model_name=_fw_model,
+                            language_code=None,
+                            device=_device,
+                            compute_type=_compute,
+                        )
+                        for s in _segs:
+                            segments.append({
+                                "start": s.start + clip_info.start,
+                                "end": s.end + clip_info.start,
+                                "text": s.text,
+                                "words": [
+                                    {
+                                        "word": w.get("word", ""),
+                                        "start": float(w.get("start", 0.0)) + clip_info.start,
+                                        "end": float(w.get("end", 0.0)) + clip_info.start,
+                                    }
+                                    for w in (s.words or [])
+                                ],
+                            })
+                        if not quiet:
+                            print(f"       ✓ On-demand transcription recovered {len(segments)} segments ({clip_info.start:.2f}s offset applied)")
+            except Exception as _e:
+                if not quiet:
+                    print(f"       ⚠ On-demand transcription failed: {_e}")
+
+        if not segments and not quiet:
+            print("       ⚠ No transcript available — captions will be skipped for this clip.")
+
+        caption_chunks = build_caption_chunks(
+            segments=segments,
+            clip_start=clip_info.start,
+            clip_end=clip_info.end,
+            clip_media_path=source_clip_path,
+            debug=debug_captions,
+        )
+
+        caption_val = validate_caption_chunks(caption_chunks, clip_info.duration)
+
+        render_captions_on_video(
+            input_video=reframed_path,
+            caption_chunks=caption_chunks,
+            out_path=final_out,
+            audio_source=reframed_path,
+        )
 
     # ── Final 9:16 Re-encode: Guarantee no black borders (1080x1920 full-frame) ──
     if not quiet:
         print("  [6/6] Final 9:16 re-encode (force full-frame, no black bars)…")
     from src.config import FFMPEG_BIN, get_video_spec_config
+    from src.ffmpeg_utils import run_ffmpeg
     _vspec = get_video_spec_config()
     _W = int(_vspec.get("target_width", 1080))
     _H = int(_vspec.get("target_height", 1920))
     _reenc_path = final_out.with_name(f"_re_{final_out.name}")
     _reenc_cmd = [
         FFMPEG_BIN, "-y", "-threads", "0",
-        "-i", str(final_out),
+        "-i", str(_raw_base),
         "-vf", (
             f"scale={_W}:{_H}:force_original_aspect_ratio=increase,"
             f"crop={_W}:{_H}"
         ),
         "-c:v", "libx264",
         "-crf", "18",
-        "-preset", "fast",
+        "-preset", "veryfast",
         "-pix_fmt", "yuv420p",
         "-c:a", "copy",
         "-movflags", "+faststart",
         str(_reenc_path),
     ]
     try:
-        _reproc = subprocess.run(_reenc_cmd, capture_output=True, text=True, timeout=180)
+        _reproc = run_ffmpeg(_reenc_cmd, timeout=300)
         if _reproc.returncode == 0 and _reenc_path.exists() and _reenc_path.stat().st_size > 0:
             _reenc_path.replace(final_out)
             if not quiet:

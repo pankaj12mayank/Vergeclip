@@ -15,20 +15,6 @@
    - Theme-matching Confirmation Modals for all actions
    ========================================================================== */
 
-function getApiBase() {
-  const s = localStorage.getItem('CUSTOM_API_BASE');
-  if (s) return s;
-  if (window.location.origin && window.location.origin !== 'null' && window.location.protocol !== 'file:') {
-    if (window.location.port === '5000') {
-      return window.location.origin;
-    }
-    if (!window.location.port && !['localhost', '127.0.0.1'].includes(window.location.hostname)) {
-      return window.location.origin;
-    }
-  }
-  return 'http://localhost:5000';
-}
-
 let API_BASE = getApiBase();
 let currentCustomQuotaUserId = null;
 let auditLivePoll = null;
@@ -51,21 +37,37 @@ function hdr() {
   return h;
 }
 
-function escapeHtml(s) {
-  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+let _tz = null;
+function _parseAsUTC(iso) {
+  if (!iso) return null;
+  let s = String(iso).trim();
+  // If no timezone info, treat as UTC (server stores UTC)
+  if (!/[zZ]|[+-]\d{2}:\d{2}$/.test(s)) {
+    // Handle "2026-09-03 10:00:00" or "2026-09-03T10:00:00" without tz
+    s = s.replace(' ', 'T');
+    if (!s.includes('T')) s += 'T00:00:00';
+    s += 'Z';
+  }
+  return new Date(s);
 }
-
-let _tz = 'Asia/Kolkata';
 function formatTime(iso) {
   if (!iso) return '—';
   try {
-    return new Date(iso).toLocaleString('en-IN', { timeZone: _tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
-  } catch { return new Date(iso).toLocaleString(); }
+    const d = _parseAsUTC(iso);
+    if (!d || isNaN(d)) return '—';
+    const opts = { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true };
+    if (_tz) opts.timeZone = _tz;
+    return d.toLocaleString('en-IN', opts);
+  } catch { try { return _parseAsUTC(iso).toLocaleString(); } catch { return String(iso); } }
 }
 function formatDate(iso) {
   if (!iso) return '—';
   try {
-    return new Date(iso).toLocaleDateString('en-IN', { timeZone: _tz });
+    const d = _parseAsUTC(iso);
+    if (!d || isNaN(d)) return '—';
+    const opts = { year: 'numeric', month: 'short', day: '2-digit' };
+    if (_tz) opts.timeZone = _tz;
+    return d.toLocaleDateString('en-IN', opts);
   } catch { return new Date(iso).toLocaleDateString(); }
 }
 
@@ -82,6 +84,7 @@ async function checkAdmin() {
 
   try {
     const r = await fetch(`${API_BASE}/api/auth/me`, { headers: hdr() });
+    if (r.status === 401) throw new Error('SESSION_EXPIRED');
     if (!r.ok) throw new Error('Session invalid');
     const j = await r.json();
     const user = j.user;
@@ -100,6 +103,12 @@ async function checkAdmin() {
     return true;
   } catch (e) {
     hideGlobalLoader();
+    if (e && e.message === 'SESSION_EXPIRED') {
+      clearAuth();
+      showToast('Session expired. Please sign in again.', 'warning');
+      setTimeout(() => { location.href = 'login.html?next=admin.html'; }, 1000);
+      return false;
+    }
     if (typeof window.showBackendOfflineOverlay === 'function') {
       window.showBackendOfflineOverlay();
     } else {
@@ -184,10 +193,16 @@ async function loadTimezone() {
   try {
     const r = await fetch(`${API_BASE}/api/admin/pipeline-config`, { headers: hdr() });
     const j = await r.json();
-    if (j.config && j.config.video_specs && j.config.video_specs.timezone) {
-      _tz = j.config.video_specs.timezone;
+    // timezone lives inside config.video_specs (server puts it there)
+    const tz = (j.config && j.config.video_specs && j.config.video_specs.timezone) || null;
+    if (tz) {
+      _tz = tz;
+      const tzInput = document.getElementById('pc_timezone');
+      if (tzInput) tzInput.value = tz;
+    } else {
+      _tz = null; // Use viewer's local system timezone
     }
-  } catch {}
+  } catch { }
 }
 
 /* ─── Custom OpenAI-Compatible AI Provider Modal Handlers ───────────────── */
@@ -331,7 +346,7 @@ async function testCustomProviderCard(id, base_url) {
     const j = await r.json();
     hideGlobalLoader();
     if (!r.ok) throw new Error(j.detail || 'Verification failed');
-    
+
     const badge = document.getElementById(`badge_cp_${id}`);
     if (badge) {
       badge.className = 'badge badge-green';
@@ -377,14 +392,26 @@ async function loadConfig(showLoad = true) {
     if (!r.ok) throw new Error(await r.text());
     const j = await r.json();
     const keysDiv = document.getElementById('configKeys');
+    const customDiv = document.getElementById('customProvidersList');
+    const transDiv = document.getElementById('transcriptionEnginesList');
+    const videoDiv = document.getElementById('videoEnginesList');
     if (!keysDiv) return;
     keysDiv.innerHTML = '';
+    if (customDiv) customDiv.innerHTML = '';
+    if (transDiv) transDiv.innerHTML = '';
+    if (videoDiv) videoDiv.innerHTML = '';
 
     const keys = ['VIDEOSAILOR_API_KEY', 'ASSEMBLYAI_API_KEY', 'GROQ_API_KEY'];
     const keyInfo = {
-      VIDEOSAILOR_API_KEY: { title: '🎙️ VideoSailor Engine (Optional)', desc: 'Cloud video downloader. Without this key, pipeline uses yt-dlp (FREE, local). Only add if you have a paid VideoSailor subscription.' },
+      VIDEOSAILOR_API_KEY: { title: '🎬 VideoSailor Engine (Optional)', desc: 'Cloud video downloader. Without this key, pipeline uses yt-dlp (FREE, local). Only add if you have a paid VideoSailor subscription.' },
       ASSEMBLYAI_API_KEY: { title: '💬 AssemblyAI Speech Engine', desc: 'Cloud transcription with word-level timestamps and multi-speaker diarization ($0.15-$0.21/hr).' },
       GROQ_API_KEY: { title: '🆓 Groq Whisper Engine (FREE)', desc: 'FREE transcription via Groq Whisper — 8 hrs audio/day, no card needed. Use alongside or instead of AssemblyAI.' }
+    };
+    // Group mapping for new 3-card layout
+    const groupMap = {
+      VIDEOSAILOR_API_KEY: videoDiv,
+      ASSEMBLYAI_API_KEY: transDiv,
+      GROQ_API_KEY: transDiv,
     };
 
     let setKeysCount = 0;
@@ -411,11 +438,67 @@ async function loadConfig(showLoad = true) {
           <button class="btn-primary btn-sm" onclick="saveKey('${k}')">💾 Save</button>
         </div>
       `;
-      keysDiv.appendChild(card);
+      const target = groupMap[k] || keysDiv;
+      (target || keysDiv).appendChild(card);
     });
 
-    // Load custom AI providers from DB
-    loadCustomProviders(keysDiv, setKeysCount, keys.length);
+    // Transcription card: active engine summary
+    if (transDiv) {
+      const transSummary = document.createElement('div');
+      transSummary.className = 'core-key-card';
+      transSummary.style.borderLeft = '3px solid #06b6d4';
+      transSummary.innerHTML = `
+        <div class="core-key-card-header">
+          <div class="core-key-title">🎙️ Active Transcription Engine</div>
+          <span class="badge badge-green" id="transActiveBadge">—</span>
+        </div>
+        <p class="core-key-desc">Select active engine in Pipeline → Audio & Engines. Keys saved here are shared.</p>
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+          <button class="btn-outline btn-sm" onclick="switchTab('pipeline'); setTimeout(()=>{switchPipelineSubTab('audio', document.querySelector('.pipeline-subnav-pill'));}, 150)">↗ Open Transcription Settings</button>
+        </div>
+        <div id="transActiveSummary" style="margin-top:0.75rem; font-size:0.82rem; color:var(--text-muted);"></div>
+      `;
+      transDiv.appendChild(transSummary);
+      fetch(`${API_BASE}/api/admin/pipeline-config`, { headers: hdr() }).then(r=>r.json()).then(j=>{
+        const cfg=j.config||{};
+        const prov=cfg.transcription_provider || 'faster_whisper';
+        const el=document.getElementById('transActiveSummary');
+        const badge=document.getElementById('transActiveBadge');
+        if (el) el.innerHTML=`Active: <strong style="color:#22d3ee;">${escapeHtml(prov)}</strong>`;
+        if (badge) badge.textContent=prov;
+      }).catch(()=>{});
+    }
+    // Video card: add Scene Generation link summary (scene providers are in Pipeline)
+    if (videoDiv) {
+      const sceneLink = document.createElement('div');
+      sceneLink.className = 'core-key-card';
+      sceneLink.style.borderLeft = '3px solid #f59e0b';
+      sceneLink.innerHTML = `
+        <div class="core-key-card-header">
+          <div class="core-key-title">🎬 Scene Generation (Script-to-Video)</div>
+          <span class="badge badge-green">Pipeline Managed</span>
+        </div>
+        <p class="core-key-desc">Local Wan2.1/LTX, fal.ai, Replicate providers for cinematic backgrounds. Configured in Pipeline → Audio & Engines. Active provider shown below.</p>
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+          <button class="btn-outline btn-sm" onclick="switchTab('pipeline'); setTimeout(()=>{switchPipelineSubTab('audio', document.querySelector('.pipeline-subnav-pill')); document.getElementById('pipetab-audio')?.scrollIntoView({behavior:'smooth'});}, 150)">↗ Open Scene Generation</button>
+          <button class="btn-outline btn-sm" onclick="refreshVideoCardScene()">🔄 Refresh Scene Providers</button>
+        </div>
+        <div id="videoCardSceneSummary" style="margin-top:0.75rem; font-size:0.82rem; color:var(--text-muted);">Loading...</div>
+      `;
+      videoDiv.appendChild(sceneLink);
+      // Populate active scene provider summary (live from API, not hardcoded)
+      fetch(`${API_BASE}/api/admin/scene-providers`, { headers: hdr() }).then(r=>r.json()).then(j=>{
+        const el=document.getElementById('videoCardSceneSummary');
+        if (!el) return;
+        const active=(j.providers||[]).find(p=>p.is_active);
+        if (active) el.innerHTML=`Active: <strong style="color:#fbbf24;">${escapeHtml(active.name)}</strong> (${escapeHtml(active.provider_key)}) — live`;
+        else el.innerHTML=`<span style="color:#fbbf24;">⚠️ No scene provider active — fallback to image/template.</span>`;
+      }).catch(()=>{ const el=document.getElementById('videoCardSceneSummary'); if(el) el.innerHTML='<span style="color:#f87171;">Failed to load</span>'; });
+    }
+
+    // Load custom AI providers from DB into dedicated Custom AI card
+    const customTarget = customDiv || keysDiv;
+    loadCustomProviders(customTarget, setKeysCount, keys.length);
 
     const kpiKeys = document.getElementById('kpi-keys');
     if (kpiKeys) kpiKeys.textContent = `${setKeysCount} / ${keys.length}`;
@@ -493,7 +576,7 @@ async function testKey(key) {
     hideGlobalLoader();
 
     if (!r.ok) throw new Error(j.detail || j.message || 'Verification failed');
-    
+
     // Update badge in real-time
     const badge = document.getElementById('badge_' + key);
     if (badge) {
@@ -669,7 +752,7 @@ async function loadPrompts(showLoad = true) {
         card.innerHTML = `
           <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
             <div style="display:flex; align-items:center; gap:0.6rem;">
-              <strong style="font-size:1.05rem; color:#fff;">${escapeHtml(p.name)} <span style="color:var(--text-muted); font-size:0.85rem;">(${escapeHtml(p.version)})</span></strong>
+              <strong style="font-size:1.05rem; color:#fff;">${escapeHtml(p.name)}</strong>
               <span class="badge ${p.is_active ? 'badge-green' : 'badge-yellow'}">${p.is_active ? '● LIVE PIPELINE' : '○ INACTIVE'}</span>
               <span style="color:var(--text-faint); font-size:0.8rem; margin-left:0.25rem;">temp: ${p.temp}</span>
             </div>
@@ -684,6 +767,37 @@ async function loadPrompts(showLoad = true) {
             <summary style="cursor:pointer; color:var(--purple); font-size:0.85rem; font-weight:700;">View System Prompt & User Template</summary>
             <pre style="white-space:pre-wrap; background:#050609; padding:0.9rem; border-radius:8px; font-size:0.82rem; margin-top:0.5rem; border:1px solid var(--border-subtle); max-height:220px; overflow:auto;">${escapeHtml(p.system_prompt)}</pre>
           </details>
+        `;
+        div.appendChild(card);
+      });
+    });
+
+    // Render any categories not in the known order so they are never silently dropped
+    const extraCats = Object.keys(grouped).filter(cat => !categoryOrder.includes(cat));
+    extraCats.forEach(cat => {
+      const items = grouped[cat];
+      if (!items || items.length === 0) return;
+      const header = document.createElement('div');
+      header.style.cssText = 'margin-top:1.5rem; margin-bottom:0.75rem; padding-bottom:0.5rem; border-bottom:1px solid rgba(167,139,250,0.3);';
+      header.innerHTML = `<strong style="font-size:1.05rem; color:#a78bfa;">🗂️ ${escapeHtml(cat)}</strong><span style="color:var(--text-muted); font-size:0.85rem; margin-left:0.5rem;">(${items.length} pipelines)</span>`;
+      div.appendChild(header);
+      items.forEach(p => {
+        const card = document.createElement('div');
+        card.className = 'admin-card';
+        card.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
+            <div style="display:flex; align-items:center; gap:0.6rem;">
+              <strong style="font-size:1.05rem; color:#fff;">${escapeHtml(p.name)}</strong>
+              <span class="badge ${p.is_active ? 'badge-green' : 'badge-yellow'}">${p.is_active ? '● LIVE PIPELINE' : '○ INACTIVE'}</span>
+              <span style="color:var(--text-faint); font-size:0.8rem; margin-left:0.25rem;">temp: ${p.temp}</span>
+            </div>
+            <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+              <button class="btn-outline btn-sm" onclick="openEditPromptModal(${p.id})">✏️ Edit</button>
+              <button class="btn-outline btn-sm" onclick="testPrompt(${p.id})">🔍 Dry Run</button>
+              <button class="btn-outline btn-sm" onclick="testPromptLive(${p.id})">⚡ Live Test</button>
+              ${p.is_active ? '' : `<button class="btn-primary btn-sm" onclick="activatePrompt(${p.id})">Activate</button>`}
+            </div>
+          </div>
         `;
         div.appendChild(card);
       });
@@ -844,7 +958,7 @@ async function loadUsers(showLoad = true) {
           </span>
         </td>
         <td>
-          <span class="badge ${isOwner ? 'badge-purple' : 'badge-green'}">${isOwner ? 'Owner' : (u.tier || 'free')}</span>
+          <span class="badge ${isOwner ? 'badge-purple' : 'badge-green'}">${isOwner ? 'Owner' : escapeHtml(u.tier || 'free')}</span>
         </td>
         <td style="color:var(--text-muted); font-size:0.82rem;">${formatDate(u.created_at)}</td>
         <td style="text-align:right;">
@@ -977,6 +1091,11 @@ async function loadSmtpSettings(showLoad = false) {
       if (document.getElementById('smtp_password') && s.password) document.getElementById('smtp_password').value = s.password;
       if (document.getElementById('smtp_sender_email')) document.getElementById('smtp_sender_email').value = s.sender_email || '';
       if (document.getElementById('smtp_sender_name')) document.getElementById('smtp_sender_name').value = s.sender_name || 'Vergeclip AI Security';
+      const pwEl = document.getElementById('smtp_password');
+      if (pwEl) {
+        pwEl.value = '';
+        pwEl.placeholder = s.password ? '•••••••• saved password — leave blank to keep' : 'Enter SMTP password';
+      }
     }
   } catch (e) {
     // optional
@@ -1168,7 +1287,7 @@ async function loadJobs(page = 1, showLoad = true) {
 
         tr.innerHTML = `
           <td><input type="checkbox" class="job-row-checkbox" data-id="${jb.id}" ${isChecked ? 'checked' : ''} onchange="toggleSingleJobSelect(this)" /></td>
-          <td style="font-family:var(--font-mono); font-weight:700; color:#fff;">${jb.id.slice(0, 8)}</td>
+          <td style="font-family:var(--font-mono); font-weight:700; color:#fff;">${escapeHtml(String(jb.id).slice(0, 8))}</td>
           <td><span class="badge badge-purple" style="font-size:0.7rem;">${jb.job_type === 'script_to_video' ? '📝 Script' : '🎬 YouTube'}</span></td>
           <td><span class="badge badge-purple" style="font-size:0.75rem;">${escapeHtml(jb.user_name || 'System')}</span></td>
           <td style="max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(jb.youtube_url || '')}">
@@ -1357,15 +1476,15 @@ function renderAuditTable() {
       const hasPayload = Boolean(ev.request_data || ev.response_data);
 
       tr.innerHTML = `
-        <td><input type="checkbox" ${isSelected ? 'checked' : ''} onchange="toggleSelectAudit('${ev.id}', this.checked)" /></td>
+        <td><input type="checkbox" ${isSelected ? 'checked' : ''} onchange="toggleSelectAudit('${escapeHtml(String(ev.id))}', this.checked)" /></td>
         <td style="color:var(--text-muted); font-family:var(--font-mono); font-size:0.82rem;">${timeStr}</td>
-        <td><span class="badge ${sevClass}">${ev.severity}</span></td>
+        <td><span class="badge ${sevClass}">${escapeHtml(ev.severity)}</span></td>
         <td><span class="badge" style="background:rgba(255,255,255,0.06);">${escapeHtml(ev.category)}</span></td>
         <td><strong style="font-size:0.88rem; color:#fff;">${escapeHtml(ev.action)}</strong></td>
         <td style="color:var(--text-main); font-size:0.85rem; max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(ev.detail)}">${escapeHtml(ev.detail)}</td>
         <td style="color:var(--text-muted); font-size:0.82rem;">${escapeHtml(ev.user_id)} (${escapeHtml(ev.ip)})</td>
         <td style="text-align:right;">
-          <button class="btn-outline btn-sm" onclick="openAuditModal('${ev.id}')" style="padding:0.25rem 0.5rem; font-size:0.75rem;">
+          <button class="btn-outline btn-sm" onclick="openAuditModal('${escapeHtml(String(ev.id))}')" style="padding:0.25rem 0.5rem; font-size:0.75rem;">
             🔍 Inspect
           </button>
         </td>
@@ -1651,21 +1770,21 @@ async function submitChangePassword() {
 
 const PIPELINE_FIELDS = [
   // Video Specs
-  'target_width','target_height','target_fps','max_short_duration','min_short_duration','timezone',
+  'target_width', 'target_height', 'target_fps', 'max_short_duration', 'min_short_duration', 'timezone',
   // Clip Selection
-  'clip_min_duration','clip_max_duration','clip_top_n','clip_min_score','clip_min_separation',
-  'clip_step_size','clip_overlap_threshold','clip_distribution_strategy',
+  'clip_min_duration', 'clip_max_duration', 'clip_top_n', 'clip_min_score', 'clip_min_separation',
+  'clip_step_size', 'clip_overlap_threshold', 'clip_distribution_strategy',
   // Semantic Ranking
-  'semantic_default_pool_size','semantic_min_score','semantic_default_top_n','semantic_default_separation',
+  'semantic_default_pool_size', 'semantic_min_score', 'semantic_default_top_n', 'semantic_default_separation',
   // Captions
-  'caption_font_size','caption_max_words','caption_min_words','caption_max_lines','caption_max_width','caption_y',
-  'caption_text_color','caption_highlight_color','caption_outline_color','caption_outline_width',
-  'caption_start_padding','caption_end_padding','caption_max_duration','caption_min_duration',
+  'caption_font_size', 'caption_max_words', 'caption_min_words', 'caption_max_lines', 'caption_max_width', 'caption_y',
+  'caption_text_color', 'caption_highlight_color', 'caption_outline_color', 'caption_outline_width',
+  'caption_start_padding', 'caption_end_padding', 'caption_max_duration', 'caption_min_duration',
   // Enhancement
-  'auto_color_filter_enabled','auto_video_filter','auto_pitch_shift_enabled','auto_pitch_semitones',
+  'auto_color_filter_enabled', 'auto_video_filter', 'auto_pitch_shift_enabled', 'auto_pitch_semitones',
 ];
 
-const BOOL_FIELDS = ['auto_color_filter_enabled','auto_pitch_shift_enabled'];
+const BOOL_FIELDS = ['auto_color_filter_enabled', 'auto_pitch_shift_enabled'];
 
 function switchPipelineSubTab(subTab, btn) {
   const pills = document.querySelectorAll('.pipeline-subnav-pill');
@@ -1727,17 +1846,13 @@ async function loadPipelineConfig() {
     if (fwEl && cfg.faster_whisper_model) fwEl.value = cfg.faster_whisper_model;
     toggleTranscriptionOptions();
 
-    // Scene generation
-    const sgEl = document.getElementById('pc_video_gen_provider');
-    if (sgEl && cfg.video_gen_provider !== undefined) sgEl.value = cfg.video_gen_provider || '';
-    const pkEl = document.getElementById('pc_pollinations_api_key');
-    if (pkEl && cfg.pollinations_api_key) pkEl.value = cfg.pollinations_api_key;
-    const akEl = document.getElementById('pc_agnes_api_key');
-    if (akEl && cfg.agnes_api_key) akEl.value = cfg.agnes_api_key;
+    // Scene generation — providers loaded from the scene_providers API (not pipeline config)
+    loadSceneProviders();
+    loadTemplateBackgrounds();
+
     const cuEl = document.getElementById('pc_comfyui_url');
     if (cuEl && cfg.comfyui_url) cuEl.value = cfg.comfyui_url;
     toggleSceneGenOptions();
-    renderSavedKeys(cfg);
 
     // Update timezone for time display
     const tzEl = document.getElementById('pc_timezone');
@@ -1746,8 +1861,10 @@ async function loadPipelineConfig() {
       tzEl.value = cfg.video_specs.timezone;
     }
 
-    // Scoring weights
-    const weights = flat.scoring_weights || {};
+    // Scoring weights (nested in cfg, not flattened)
+    const weights = (cfg.scoring_weights && typeof cfg.scoring_weights === 'object')
+      ? cfg.scoring_weights
+      : (flat.scoring_weights || {});
     renderScoringWeights(weights);
   } catch (err) {
     console.error('Failed to load pipeline config:', err);
@@ -1760,7 +1877,7 @@ function renderScoringWeights(weights) {
   grid.innerHTML = '';
   for (const [key, val] of Object.entries(weights)) {
     const div = document.createElement('div');
-    div.innerHTML = `<label class="auth-label">${key}</label><input class="admin-input" type="number" step="0.5" data-weight-key="${key}" value="${val}" />`;
+    div.innerHTML = `<label class="auth-label">${escapeHtml(key)}</label><input class="admin-input" type="number" step="0.5" data-weight-key="${escapeHtml(key)}" value="${escapeHtml(val)}" />`;
     grid.appendChild(div);
   }
 }
@@ -1800,9 +1917,6 @@ async function savePipelineConfig() {
   if (tpEl) payload.transcription_provider = tpEl.value;
   const gmEl = document.getElementById('pc_groq_whisper_model');
   if (gmEl) payload.groq_whisper_model = gmEl.value;
-  // Scene generation
-  const sgEl = document.getElementById('pc_video_gen_provider');
-  if (sgEl) payload.video_gen_provider = sgEl.value;
 
   showGlobalLoader('Saving Pipeline Settings...', 'Applying configuration to all components.');
   try {
@@ -1858,49 +1972,309 @@ function toggleTranscriptionOptions() {
   if (fwWrap) fwWrap.style.display = provider === 'faster_whisper' ? '' : 'none';
 }
 
-async function saveSceneGeneration() {
-  const payload = {};
-  const sgEl = document.getElementById('pc_video_gen_provider');
-  const pkEl = document.getElementById('pc_pollinations_api_key');
-  const akEl = document.getElementById('pc_agnes_api_key');
-  const cuEl = document.getElementById('pc_comfyui_url');
-  if (sgEl) payload.video_gen_provider = sgEl.value;
-  if (pkEl && pkEl.value.trim()) payload.pollinations_api_key = pkEl.value.trim();
-  if (akEl && akEl.value.trim()) payload.agnes_api_key = akEl.value.trim();
-  if (cuEl && cuEl.value.trim()) payload.comfyui_url = cuEl.value.trim();
+const _SCENE_META = {
+  local: { name: 'Local — Wan2.1 / LTX-Video' },
+  fal: { name: 'fal.ai' },
+  replicate: { name: 'Replicate' },
+};
+const _SCENE_KEY_ENDPOINTS = {
+  fal: 'https://queue.fal.run',
+  replicate: 'https://api.replicate.com/v1',
+};
 
-  showGlobalLoader('Saving Scene Generation...', 'Applying video generation provider.');
+async function loadSceneProviders() {
   try {
-    const r = await fetch(`${API_BASE}/api/admin/pipeline-config`, {
-      method: 'POST',
-      headers: hdr(),
-      body: JSON.stringify(payload),
+    const r = await fetch(`${API_BASE}/api/admin/scene-providers`, { headers: hdr() });
+    if (!r.ok) return;
+    const j = await r.json();
+    const providers = j.providers || [];
+    window._sceneProviders = providers;
+    _populateSceneFields(providers);
+    renderSavedProviders(providers);
+    // Also update Config tab's Video Engines summary card (live, not hardcoded)
+    const vcEl = document.getElementById('videoCardSceneSummary');
+    if (vcEl) {
+      const active = providers.find(p => p.is_active);
+      if (active) vcEl.innerHTML = `Active: <strong style="color:#fbbf24;">${escapeHtml(active.name)}</strong> (${escapeHtml(active.provider_key)})`;
+      else vcEl.innerHTML = `<span style="color:#fbbf24;">⚠️ No scene provider active — fallback to image/template.</span>`;
+    }
+  } catch (err) {
+    console.error('Failed to load scene providers:', err);
+  }
+}
+
+async function refreshConfigSummaries() {
+  // Refresh Config tab's live summaries (not hardcoded)
+  try {
+    const pr = await fetch(`${API_BASE}/api/admin/pipeline-config`, { headers: hdr() });
+    const pj = await pr.json();
+    const prov = (pj.config && pj.config.transcription_provider) || 'faster_whisper';
+    const te = document.getElementById('transActiveSummary');
+    const tb = document.getElementById('transActiveBadge');
+    if (te) te.innerHTML = `Active: <strong style="color:#22d3ee;">${escapeHtml(prov)}</strong>`;
+    if (tb) tb.textContent = prov;
+  } catch {}
+  loadSceneProviders();
+}
+
+async function refreshVideoCardScene() {
+  showGlobalLoader('Refreshing scene providers...', '');
+  await loadSceneProviders();
+  hideGlobalLoader();
+  showToast('Scene providers refreshed', 'success');
+}
+
+function _populateSceneFields(providers) {
+  const select = document.getElementById('pc_scene_provider');
+  const active = providers.find(p => p.is_active);
+  if (select && active) select.value = active.provider_key;
+
+  const map = { local: {}, fal: {}, replicate: {} };
+  for (const p of providers) map[p.provider_key] = p;
+
+  // Local
+  const le = document.getElementById('pc_local_endpoint');
+  if (le && map.local && map.local.endpoint) le.value = map.local.endpoint;
+  const lm = document.getElementById('pc_local_model');
+  if (lm && map.local && map.local.model_name) lm.value = map.local.model_name;
+  const lt = document.getElementById('pc_local_timeout');
+  if (lt && map.local && map.local.timeout_seconds) lt.value = map.local.timeout_seconds;
+  const cuEl = document.getElementById('pc_comfyui_url');
+  if (cuEl && map.local && map.local.endpoint) cuEl.value = map.local.endpoint;
+
+  // fal
+  const fe = document.getElementById('pc_fal_api_key');
+  if (fe) { fe.value = ''; fe.placeholder = map.fal && map.fal.api_key_masked ? `•••••••• saved key — ${map.fal.api_key_masked}` : 'fal AI API key'; }
+  const fm = document.getElementById('pc_fal_model');
+  if (fm && map.fal && map.fal.model_name) fm.value = map.fal.model_name;
+  const ft = document.getElementById('pc_fal_timeout');
+  if (ft && map.fal && map.fal.timeout_seconds) ft.value = map.fal.timeout_seconds;
+
+  // replicate
+  const re = document.getElementById('pc_replicate_api_key');
+  if (re) { re.value = ''; re.placeholder = map.replicate && map.replicate.api_key_masked ? `•••••••• saved token — ${map.replicate.api_key_masked}` : 'r8_... Replicate API token'; }
+  const rm = document.getElementById('pc_replicate_model');
+  if (rm && map.replicate && map.replicate.model_name) rm.value = map.replicate.model_name;
+  const rt = document.getElementById('pc_replicate_timeout');
+  if (rt && map.replicate && map.replicate.timeout_seconds) rt.value = map.replicate.timeout_seconds;
+}
+
+async function saveSceneGeneration() {
+  const provider = document.getElementById('pc_scene_provider')?.value || 'local';
+
+  // We save the provider's config (key/model/endpoint/timeout), then activate it.
+  const payload = { provider_key: provider, is_active: true, model_name: '', endpoint: '', timeout_seconds: 180 };
+  if (provider === 'local') {
+    const le = document.getElementById('pc_local_endpoint'); if (le && le.value.trim()) payload.endpoint = le.value.trim();
+    const lm = document.getElementById('pc_local_model'); if (lm && lm.value.trim()) payload.model_name = lm.value.trim();
+    const lt = document.getElementById('pc_local_timeout'); if (lt && lt.value) payload.timeout_seconds = parseInt(lt.value) || 700;
+    // persist comfyui_url so other code paths keep working
+    if (payload.endpoint) {
+      try { await fetch(`${API_BASE}/api/admin/pipeline-config`, { method: 'POST', headers: hdr(), body: JSON.stringify({ comfyui_url: payload.endpoint }) }); } catch (_e) { }
+    }
+  } else {
+    const keyEl = document.getElementById(`pc_${provider}_api_key`);
+    if (keyEl && keyEl.value.trim()) payload.api_key = keyEl.value.trim();
+    const mEl = document.getElementById(`pc_${provider}_model`);
+    if (mEl && mEl.value.trim()) payload.model_name = mEl.value.trim();
+    const tEl = document.getElementById(`pc_${provider}_timeout`);
+    if (tEl && tEl.value) payload.timeout_seconds = parseInt(tEl.value) || 180;
+  }
+
+  showGlobalLoader('Saving Scene Generation...', 'Saving provider config and activating it.');
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/scene-providers`, {
+      method: 'POST', headers: hdr(), body: JSON.stringify(payload),
     });
     const j = await r.json();
-    hideGlobalLoader();
     if (!r.ok || !j.success) throw new Error(j.detail || 'Failed to save');
-    showToast('Scene generation saved!', 'success');
-    // Clear key inputs after save (they're now stored securely)
-    if (pkEl) pkEl.value = '';
-    if (akEl) akEl.value = '';
-    loadPipelineConfig();
+    // Activate (redundant if is_active already true, but enforces key validation)
+    const ar = await fetch(`${API_BASE}/api/admin/scene-providers/${provider}/activate`, { method: 'POST', headers: hdr(), body: '{}' });
+    const aj = await ar.json();
+    if (!ar.ok) throw new Error(aj.detail || 'Failed to activate provider');
+    hideGlobalLoader();
+    showToast(`Scene generation saved & activated (${_SCENE_META[provider].name})`, 'success');
+    // Clear key inputs (they are stored securely)
+    if (provider !== 'local') { const k = document.getElementById(`pc_${provider}_api_key`); if (k) k.value = ''; }
+    loadSceneProviders();
   } catch (err) {
     hideGlobalLoader();
     showToast(err.message || 'Save failed', 'error');
   }
 }
 
+async function activateSceneProvider(provider) {
+  showGlobalLoader('Activating provider...', 'Setting the active scene generation provider.');
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/scene-providers/${provider}/activate`, { method: 'POST', headers: hdr(), body: '{}' });
+    const j = await r.json();
+    hideGlobalLoader();
+    if (!r.ok) throw new Error(j.detail || 'Failed to activate');
+    showToast(j.message, 'success');
+    loadSceneProviders();
+  } catch (err) {
+    hideGlobalLoader();
+    showToast(err.message || 'Activation failed', 'error');
+  }
+}
+
 function toggleSceneGenOptions() {
-  const provider = document.getElementById('pc_video_gen_provider')?.value || '';
-  const pkWrap = document.getElementById('pollinationsKeyWrap');
-  const akWrap = document.getElementById('agnesKeyWrap');
-  const lkWrap = document.getElementById('localKeyWrap');
-  if (pkWrap) pkWrap.style.display = provider === 'pollinations' ? '' : 'none';
-  if (akWrap) akWrap.style.display = provider === 'agnes' ? '' : 'none';
-  if (lkWrap) lkWrap.style.display = provider === 'local' ? '' : 'none';
+  const provider = document.getElementById('pc_scene_provider')?.value || 'local';
+  const localWrap = document.getElementById('localProvWrap');
+  const falWrap = document.getElementById('falProvWrap');
+  const repWrap = document.getElementById('replicateProvWrap');
+  if (localWrap) localWrap.style.display = provider === 'local' ? '' : 'none';
+  if (falWrap) falWrap.style.display = provider === 'fal' ? '' : 'none';
+  if (repWrap) repWrap.style.display = provider === 'replicate' ? '' : 'none';
+}
+
+
+function _comfyPanel(line, level) {
+  const panel = document.getElementById('comfy_setup_panel');
+  if (!panel) return;
+  if (line === null) { panel.style.display = 'none'; panel.textContent = ''; return; }
+  panel.style.display = 'block';
+  const stamp = new Date().toLocaleTimeString();
+  const tag = level === 'err' ? '✖' : level === 'warn' ? '⚠' : level === 'ok' ? '✔' : '·';
+  const color = level === 'err' ? '#fca5a5' : level === 'warn' ? '#fde68a' : level === 'ok' ? '#86efac' : '#cbd5e1';
+  panel.innerHTML += `<div style="color:${color}; margin:1px 0;">[${stamp}] ${tag} ${escapeHtml(String(line))}</div>`;
+  panel.scrollTop = panel.scrollHeight;
+}
+
+function _comfyPanelReset() {
+  const panel = document.getElementById('comfy_setup_panel');
+  if (panel) { panel.style.display = 'block'; panel.innerHTML = ''; }
+}
+
+async function refreshComfyStatus() {
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/comfyui/status`, { headers: hdr() });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (_e) {
+    return null;
+  }
+}
+
+async function setupAndStartComfyUI() {
+  // 1. Quick status check — if everything is already installed AND running, just confirm.
+  const status = await refreshComfyStatus();
+  if (status && status.ready_to_generate) {
+    showToast('Local CogVideoX-2b is already installed and ComfyUI is running. Nothing to do.', 'success');
+    await checkComfyUIModels();
+    return;
+  }
+
+  // 2. If everything is installed but ComfyUI is not running, just start it.
+  if (status && status.all_ready && !status.comfyui_running) {
+    _comfyPanel('All components installed — starting ComfyUI…', 'ok');
+    await startComfyUI();
+    _comfyPanel(null);
+    return;
+  }
+
+  // 3. Otherwise: run the full setup (clone + venv + PyTorch + custom node + models)
+  //    then auto-start ComfyUI in the same call. Long-running — keep the panel open.
+  const btn = document.getElementById('btn_comfy_setup_start');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Installing CogVideoX-2B…'; }
+
+  _comfyPanelReset();
+  if (status) {
+    _comfyPanel('Checking what is already installed…', 'info');
+    for (const c of (status.components || [])) {
+      _comfyPanel(`${c.present ? '✔' : '✖'} ${c.label}${c.size_mb ? ' — ' + c.size_mb + ' MB' : ''}`,
+        c.present ? 'ok' : (c.optional ? 'warn' : 'err'));
+    }
+    const missing = (status.components || []).filter(c => !c.present && !c.optional);
+    if (missing.length) {
+      _comfyPanel(`Will install: ${missing.map(m => m.label).join(', ')}`, 'warn');
+    }
+  } else {
+    _comfyPanel('Could not query current install status — proceeding with full setup.', 'warn');
+  }
+
+  showGlobalLoader('Setting up Local CogVideoX-2B…',
+    'This installs ComfyUI + Python venv + PyTorch CUDA + the CogVideoXWrapper custom node + downloads ~9 GB of model files. It can take 10-30 minutes on a fresh machine. Watch the live log below for progress.');
+
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/comfyui/setup`, {
+      method: 'POST',
+      headers: hdr(),
+      body: JSON.stringify({ start_after: true })
+    });
+    const j = await r.json();
+    hideGlobalLoader();
+    if (j.actions) {
+      for (const a of j.actions) {
+        _comfyPanel(`${a.ok ? '✔' : '✖'} ${a.label}${a.detail ? ' — ' + a.detail : ''}`,
+          a.ok ? 'ok' : 'err');
+      }
+    }
+    if (j.log_tail) {
+      const tailLines = j.log_tail.split('\n').slice(-20);
+      _comfyPanel('── last 20 log lines ──', 'info');
+      for (const ln of tailLines) if (ln.trim()) _comfyPanel(ln, 'info');
+    }
+    if (j.start_result) {
+      showToast(j.start_result.message || 'ComfyUI start attempted', j.start_result.running ? 'success' : 'warning');
+    } else {
+      showToast(j.message || 'Setup finished', j.all_ready ? 'success' : 'warning');
+    }
+    // Final verification
+    await checkComfyUIModels();
+  } catch (e) {
+    hideGlobalLoader();
+    _comfyPanel('Network / server error: ' + e.message, 'err');
+    showToast('Setup failed: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔧 Setup & Start Local CogVideoX-2B'; }
+  }
+}
+
+async function startComfyUI() {
+  showGlobalLoader('Starting / Checking Local ComfyUI...', 'Launching CogVideoX server and probing http://127.0.0.1:8188. First launch can take 60-120s.');
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/comfyui/start`, {
+      method: 'POST',
+      headers: hdr(),
+    });
+    const j = await r.json();
+    hideGlobalLoader();
+    if (!r.ok || !j.success) throw new Error(j.detail || 'Failed to start ComfyUI');
+    showToast(j.message, j.running ? 'success' : 'warning');
+    if (j.log_tail) {
+      console.log('comfyui.log tail:\n' + j.log_tail);
+      showToast('ComfyUI log: ' + j.log_tail.split('\n').slice(-3).join(' '), 'error');
+    }
+    // Always check models — even if ComfyUI was already running, we need to verify GPU + CogVideo detection
+    await checkComfyUIModels();
+  } catch (e) {
+    hideGlobalLoader();
+    showToast('Start failed: ' + e.message, 'error');
+  }
+}
+
+async function checkComfyUIModels() {
+  showGlobalLoader('Checking ComfyUI GPU & CogVideoX Model...', 'Probing ComfyUI for GPU device and model availability.');
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/video-provider/test`, {
+      method: 'POST',
+      headers: hdr(),
+      body: JSON.stringify({ provider: 'local', value: '' })
+    });
+    const j = await r.json();
+    hideGlobalLoader();
+    if (j.message) showToast(j.message, j.verified ? 'success' : 'warning');
+  } catch (_e) {
+    hideGlobalLoader();
+  }
 }
 
 async function testVideoProvider(provider, inputId) {
+  if (provider === 'local') {
+    checkComfyUIModels();
+    return;
+  }
   const value = inputId ? (document.getElementById(inputId)?.value.trim() || '') : '';
   showGlobalLoader(`Testing ${provider} connection...`, 'Contacting provider to verify API authentication.');
   try {
@@ -1919,133 +2293,264 @@ async function testVideoProvider(provider, inputId) {
   }
 }
 
-function renderSavedKeys(cfg) {
-  const display = document.getElementById('savedKeysDisplay');
-  const list = document.getElementById('savedKeysList');
+async function testSceneProvider(provider) {
+  // Test using the saved provider config (no typed key) — falls back to stored key server-side.
+  if (provider === 'local') { checkComfyUIModels(); return; }
+  showGlobalLoader(`Testing ${_SCENE_META[provider].name}...`, 'Contacting provider to verify API authentication.');
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/video-provider/test`, {
+      method: 'POST', headers: hdr(), body: JSON.stringify({ provider, value: '' })
+    });
+    const j = await r.json();
+    hideGlobalLoader();
+    if (!r.ok) throw new Error(j.detail || 'Test failed');
+    showToast(j.message, j.verified ? 'success' : 'error');
+  } catch (e) {
+    hideGlobalLoader();
+    showToast('Test failed: ' + e.message, 'error');
+  }
+}
+
+function renderSavedProviders(providers) {
+  const display = document.getElementById('savedProvidersDisplay');
+  const list = document.getElementById('savedProvidersList');
   const statusBanner = document.getElementById('sceneGenActiveStatus');
   if (!display || !list) return;
 
-  const keys = [];
-  const pk = cfg.pollinations_api_key || '';
-  const ak = cfg.agnes_api_key || '';
-  const active = cfg.video_gen_provider || '';
-
-  if (pk) keys.push({ name: 'Pollinations.ai', key: pk, id: 'pollinations' });
-  if (ak) keys.push({ name: 'Agnes AI', key: ak, id: 'agnes' });
+  const active = providers.find(p => p.is_active);
+  const hasAny = providers.some(p => p.api_key_masked || p.provider_key === 'local');
 
   // Update status banner
   if (statusBanner) {
-    const hasLocal = (active === 'local');
-    if (keys.length > 0 || hasLocal) {
-      statusBanner.style.display = '';
-      statusBanner.style.background = 'rgba(16,185,129,0.1)';
-      statusBanner.style.borderColor = 'rgba(16,185,129,0.3)';
-      statusBanner.style.color = '#10b981';
-      const provName = active === 'local' ? 'Local CogVideoX-2B (GPU)' : (keys.find(k => k.id === active)?.name || keys[0].name);
-      const extras = (active === 'local' && keys.length > 0) ? ' — cloud keys also fallback' : '';
-      statusBanner.innerHTML = `✓ Video generation enabled — provider: <strong>${provName}</strong>${extras}. The system auto-switches providers in order until one succeeds.`;
-      if (active === 'local') {
-        statusBanner.style.background = 'rgba(139,92,246,0.12)';
-        statusBanner.style.borderColor = 'rgba(139,92,246,0.3)';
-        statusBanner.style.color = '#a78bfa';
-      }
-    } else {
-      statusBanner.style.display = '';
+    if (active) {
+      statusBanner.style.display = 'block';
+      statusBanner.style.background = 'rgba(168,85,247,0.12)';
+      statusBanner.style.borderColor = 'rgba(168,85,247,0.35)';
+      statusBanner.style.color = '#e9d5ff';
+      const extra = active.provider_key === 'local' ? ' (offline GPU)' : '';
+      statusBanner.innerHTML = `✓ Active Scene Video Provider: <strong>${escapeHtml(active.name || active.provider_key)}</strong>${extra}. Script-to-Video Shorts will use this active provider.`;
+    } else if (hasAny) {
+      statusBanner.style.display = 'block';
       statusBanner.style.background = 'rgba(251,191,36,0.1)';
       statusBanner.style.borderColor = 'rgba(251,191,36,0.3)';
       statusBanner.style.color = '#fbbf24';
-      statusBanner.innerHTML = '⚠ No provider configured — Script-to-Video will use PIL generative backgrounds';
+      statusBanner.innerHTML = '⚠ No provider is active. Choose one above and click <strong>Save &amp; Activate Provider</strong>.';
+    } else {
+      statusBanner.style.display = 'none';
     }
   }
 
-  if (keys.length === 0) {
+  if (!providers.length) {
     display.style.display = 'none';
     return;
   }
 
-  display.style.display = '';
-  list.innerHTML = keys.map(k => {
-    const masked = k.key.substring(0, 8) + '••••••••' + k.key.substring(k.key.length - 4);
+  display.style.display = 'block';
+  list.innerHTML = providers.map(p => {
+    const activeBadge = p.is_active ? ' <span style="color:#c084fc; font-weight:800; font-size:0.72rem; padding:3px 10px; background:rgba(168,85,247,0.2); border:1px solid rgba(168,85,247,0.4); border-radius:9999px;">● ACTIVE</span>' : '';
+    const masked = p.api_key_masked ? maskKey(p.api_key_masked) : (p.provider_key === 'local' ? 'http://127.0.0.1:8188' : '—');
+    const nameStr = p.name || p.provider_key;
     return `
-      <div style="display:flex; align-items:center; gap:0.75rem; padding:0.5rem 0.75rem; background:rgba(255,255,255,0.03); border-radius:8px; border:1px solid rgba(255,255,255,0.06);">
-        <span style="font-size:0.82rem; color:var(--text-primary); font-weight:600; min-width:130px;">${k.name}</span>
-        <span style="font-size:0.78rem; color:var(--text-muted); font-family:monospace; flex:1;">${masked}</span>
-        <button class="btn-outline btn-sm" onclick="editSceneKey('${k.id}')">✏️ Edit</button>
-        <button class="btn-outline btn-sm btn-danger-outline" onclick="deleteSavedKey('${k.id}')">🗑️ Delete</button>
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:1.25rem; padding:0.9rem 1.25rem; background:rgba(255,255,255,0.02); border-radius:10px; border:1px solid rgba(255,255,255,0.07); flex-wrap:wrap;">
+        <div style="display:flex; align-items:center; gap:0.75rem; min-width:220px;">
+          <span style="font-size:0.88rem; color:var(--text-primary); font-weight:700;">${escapeHtml(nameStr)}</span>
+          ${activeBadge}
+        </div>
+        <div style="font-size:0.8rem; color:var(--text-muted); flex:1; min-width:200px; display:flex; gap:1.25rem; align-items:center; flex-wrap:wrap;">
+          <span>Model: <code style="color:#e2e8f0; background:rgba(255,255,255,0.05); padding:2px 6px; border-radius:4px;">${escapeHtml(p.model_name || 'default')}</code></span>
+          <span>Key / Endpoint: <span style="font-family:monospace; color:#94a3b8;">${escapeHtml(masked)}</span></span>
+        </div>
+        <div style="display:flex; gap:0.5rem; align-items:center;">
+          <button class="btn-outline btn-sm" style="height:38px; padding:0 0.95rem; font-size:0.8rem;" onclick="editSceneProvider('${p.provider_key}')">✏️ Edit</button>
+          <button class="btn-primary btn-sm" style="height:38px; padding:0 0.95rem; font-size:0.8rem;" onclick="activateSceneProvider('${p.provider_key}')">✅ Activate</button>
+          ${p.provider_key !== 'local' ? `<button class="btn-outline btn-sm btn-danger-outline" style="height:38px; padding:0 0.95rem; font-size:0.8rem;" onclick="clearSceneProviderKey('${p.provider_key}')">🗑️ Clear Key</button>` : ''}
+        </div>
       </div>
     `;
   }).join('');
 }
 
-function editSceneKey(providerId) {
-  const select = document.getElementById('pc_video_gen_provider');
-  if (select) {
-    select.value = providerId;
-    toggleSceneGenOptions();
-  }
-  // Focus the key input
-  const keyIds = { pollinations: 'pc_pollinations_api_key', agnes: 'pc_agnes_api_key' };
-  const keyInput = document.getElementById(keyIds[providerId]);
-  if (keyInput) {
-    keyInput.focus();
-    keyInput.select();
+function formatTemplateColorSwatches(colorsObj) {
+  if (!colorsObj || typeof colorsObj !== 'object') return '<span style="color:var(--text-muted); font-size:0.75rem;">Default</span>';
+  return Object.entries(colorsObj).map(([role, val]) => {
+    let cssColor = String(val).trim();
+    if (cssColor.includes(',') && !cssColor.startsWith('rgb')) {
+      cssColor = `rgb(${cssColor})`;
+    }
+    const roleLabel = role.charAt(0).toUpperCase() + role.slice(1);
+    return `
+      <span style="display:inline-flex; align-items:center; gap:0.35rem; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); padding:3px 8px; border-radius:6px; font-size:0.72rem;" title="${escapeHtml(roleLabel)}: ${escapeHtml(String(val))}">
+        <span style="width:10px; height:10px; border-radius:50%; background:${escapeHtml(cssColor)}; display:inline-block; border:1px solid rgba(255,255,255,0.3); box-shadow:0 0 6px ${escapeHtml(cssColor)}; flex-shrink:0;"></span>
+        <span style="color:var(--text-muted);">${escapeHtml(roleLabel)}</span>
+      </span>
+    `;
+  }).join(' ');
+}
+
+async function loadTemplateBackgrounds() {
+  const statusEl = document.getElementById('templateBgStatus');
+  const gridEl = document.getElementById('templateBgGrid');
+  if (!gridEl) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/template-backgrounds`, { headers: hdr() });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || 'Failed to load templates');
+    const tpls = j.templates || [];
+    if (statusEl) {
+      statusEl.style.display = '';
+      if (tpls.length === 0) {
+        statusEl.style.background = 'rgba(251,191,36,0.1)'; statusEl.style.borderColor = 'rgba(251,191,36,0.3)'; statusEl.color = '#fbbf24';
+        statusEl.innerHTML = '⚠️ No templates found in <code>assets/templates/backgrounds/</code>. Tier 3 will use solid-color fallback.';
+      } else {
+        const enabled = tpls.filter(t => t.enabled).length;
+        statusEl.style.background = 'rgba(168,85,247,0.12)'; statusEl.style.borderColor = 'rgba(168,85,247,0.35)'; statusEl.style.color = '#e9d5ff';
+        statusEl.innerHTML = `✅ <strong>${tpls.length} templates discovered</strong> — <strong>${enabled} enabled</strong> for Tier 3 fallback round-robin selection.`;
+      }
+    }
+    if (tpls.length === 0) { gridEl.innerHTML = '<p style="color:var(--text-muted); font-size:0.85rem;">No templates discovered.</p>'; return; }
+    gridEl.innerHTML = tpls.map(t => {
+      const safeStr = `${t.caption_safe_zone?.y_min_pct ?? 0.6}–${t.caption_safe_zone?.y_max_pct ?? 0.9}`;
+      return `
+        <div style="background:rgba(255,255,255,0.02); border:1px solid ${t.enabled ? 'rgba(168,85,247,0.4)' : 'rgba(255,255,255,0.07)'}; border-radius:12px; padding:1.1rem; display:flex; flex-direction:column; gap:0.75rem; box-shadow:0 4px 20px rgba(0,0,0,0.25); transition:all 0.25s ease;">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem; flex-wrap:wrap;">
+            <span style="font-weight:800; color:var(--text-primary); font-size:0.95rem;">${escapeHtml(t.name)}</span>
+            <label style="display:inline-flex; align-items:center; gap:0.4rem; cursor:pointer; font-size:0.78rem; font-weight:700; color:${t.enabled ? '#e9d5ff' : 'var(--text-muted)'}; background:${t.enabled ? 'rgba(168,85,247,0.2)' : 'rgba(255,255,255,0.04)'}; border:1px solid ${t.enabled ? 'rgba(168,85,247,0.45)' : 'rgba(255,255,255,0.08)'}; padding:4px 10px; border-radius:9999px;">
+              <input type="checkbox" ${t.enabled ? 'checked' : ''} onchange="toggleTemplateEnabled('${t.template_id}', this.checked)" style="width:15px; height:15px; accent-color:#a855f7; cursor:pointer;" />
+              ${t.enabled ? 'Enabled' : 'Disabled'}
+            </label>
+          </div>
+          <p style="font-size:0.8rem; color:var(--text-muted); margin:0; line-height:1.45;">${escapeHtml(t.description || '')}</p>
+          
+          <div style="display:flex; gap:0.5rem; flex-wrap:wrap; font-size:0.74rem;">
+            <span style="background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); padding:3px 8px; border-radius:6px; color:var(--text-muted);">⏱️ ${t.loop_duration}s loop</span>
+            <span style="background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); padding:3px 8px; border-radius:6px; color:var(--text-muted);">📐 safe: ${safeStr}</span>
+            <span style="background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); padding:3px 8px; border-radius:6px; color:var(--text-muted); font-family:monospace;">🆔 ${escapeHtml(t.template_id)}</span>
+          </div>
+
+          <div>
+            <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:0.35rem; font-weight:700;">Suggested Palette:</div>
+            <div style="display:flex; gap:0.4rem; flex-wrap:wrap;">
+              ${formatTemplateColorSwatches(t.suggested_colors)}
+            </div>
+          </div>
+
+          <div style="position:relative; overflow:hidden; border-radius:10px; border:1px solid rgba(255,255,255,0.1); background:#05060b;">
+            <video src="/assets/templates/backgrounds/${encodeURIComponent(t.template_id)}/background.mp4" autoplay loop muted playsinline style="width:100%; aspect-ratio:9/16; object-fit:cover; display:block; max-height:240px;"></video>
+          </div>
+        </div>
+      `;
+    }).join('');
+  } catch (e) {
+    if (gridEl) gridEl.innerHTML = `<p style="color:#fca5a5; font-size:0.85rem;">Failed to load templates: ${escapeHtml(e.message)}</p>`;
   }
 }
 
-const KEY_META = {
-  pollinations: { name: 'Pollinations.ai', setting: 'pollinations_api_key' },
-  agnes: { name: 'Agnes AI', setting: 'agnes_api_key' },
-};
+async function toggleTemplateEnabled(templateId, enabled) {
+  try {
+    const cur = await (await fetch(`${API_BASE}/api/admin/template-backgrounds`, { headers: hdr() })).json();
+    const allIds = (cur.templates || []).map(t => t.template_id);
+    const enabledIds = (cur.templates || []).filter(t => t.enabled).map(t => t.template_id);
+    let nextIds;
+    if (enabled) { nextIds = [...new Set([...enabledIds, templateId])]; }
+    else { nextIds = enabledIds.filter(id => id !== templateId); }
+    // If all would be enabled, send null (= all enabled, clears DB override)
+    const payload = (nextIds.length === allIds.length || nextIds.length === 0) ? { enabled_ids: null } : { enabled_ids: nextIds };
+    showGlobalLoader('Updating templates...', `Toggling ${templateId}`);
+    const r = await fetch(`${API_BASE}/api/admin/template-backgrounds/enabled`, { method: 'POST', headers: hdr(), body: JSON.stringify(payload) });
+    const j = await r.json();
+    hideGlobalLoader();
+    if (!r.ok) throw new Error(j.detail || 'Failed');
+    showToast(j.message, 'success');
+    loadTemplateBackgrounds();
+  } catch (e) { hideGlobalLoader(); showToast(e.message, 'error'); }
+}
 
-async function deleteSavedKey(providerId) {
-  const meta = KEY_META[providerId];
-  if (!meta) return;
+async function setAllTemplatesEnabled(enabled) {
+  const body = enabled ? { enabled_ids: null } : { enabled_ids: ["__none__"] };
+  try {
+    showGlobalLoader(enabled ? 'Enabling all templates...' : 'Disabling templates...', '');
+    const r = await fetch(`${API_BASE}/api/admin/template-backgrounds/enabled`, { method: 'POST', headers: hdr(), body: JSON.stringify(body) });
+    const j = await r.json();
+    hideGlobalLoader();
+    if (!r.ok) throw new Error(j.detail || 'Failed');
+    showToast(j.message, 'success');
+    loadTemplateBackgrounds();
+  } catch (e) { hideGlobalLoader(); showToast(e.message, 'error'); }
+}
 
+function maskKey(k) {
+  if (!k) return '';
+  if (k.includes('****')) return k; // already a masked form from the server
+  const s = String(k);
+  if (s.length <= 12) return s.slice(0, 4) + '********' + s.slice(-2);
+  return s.slice(0, 8) + '********' + s.slice(-4);
+}
+
+function editSceneProvider(providerKey) {
+  const select = document.getElementById('pc_scene_provider');
+  if (select) {
+    select.value = providerKey;
+    toggleSceneGenOptions();
+  }
+  if (providerKey !== 'local') {
+    const keyInput = document.getElementById(`pc_${providerKey}_api_key`);
+    if (keyInput) { keyInput.focus(); keyInput.select(); }
+  }
+}
+
+async function clearSceneProviderKey(providerKey) {
+  const meta = _SCENE_META[providerKey] || { name: providerKey };
   showConfirmModal({
-    title: `Delete ${meta.name} API Key`,
-    message: `This permanently removes the stored key. The provider will no longer be used for video generation until you add a new key.`,
+    title: `Clear ${meta.name} API Key`,
+    message: `This removes the stored key for ${meta.name}. You must add a new key before it can be used again.`,
     icon: '🗑️',
-    confirmText: 'Delete Key',
+    confirmText: 'Clear Key',
     cancelText: 'Keep Key',
     confirmType: 'danger',
     onConfirm: async () => {
-      showGlobalLoader(`Deleting ${meta.name} key...`, 'Removing saved API key from database.');
+      showGlobalLoader(`Clearing ${meta.name} key...`, 'Removing saved API key from database.');
       try {
-        const r = await fetch(`${API_BASE}/api/admin/config/delete-key`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ key: meta.setting }),
+        const r = await fetch(`${API_BASE}/api/admin/scene-providers/${providerKey}/clear-key`, {
+          method: 'POST', headers: hdr(), body: '{}',
         });
         const j = await r.json();
-        if (!r.ok) throw new Error(j.detail || 'Failed to delete API key');
         hideGlobalLoader();
-        showToast(`${meta.name} API key deleted`, 'success');
-        await loadPipelineConfig();
+        if (!r.ok) throw new Error(j.detail || 'Failed to clear key');
+        showToast(`${meta.name} key cleared`, 'success');
+        await loadSceneProviders();
       } catch (err) {
         hideGlobalLoader();
-        showToast(err.message || 'Failed to delete API key', 'error');
+        showToast(err.message || 'Failed to clear key', 'error');
       }
     }
   });
 }
 
 async function resetPipelineConfig() {
-  if (!confirm('Reset ALL pipeline settings to defaults? This cannot be undone.')) return;
-  showGlobalLoader('Resetting...', 'Restoring hardcoded defaults.');
-  try {
-    const r = await fetch(`${API_BASE}/api/admin/pipeline-config/reset`, {
-      method: 'POST',
-      headers: hdr(),
-    });
-    const j = await r.json();
-    hideGlobalLoader();
-    if (!r.ok || !j.success) throw new Error(j.detail || 'Reset failed');
-    showToast(j.message || 'Pipeline settings reset!', 'success');
-    loadPipelineConfig();
-  } catch (err) {
-    hideGlobalLoader();
-    showToast(err.message || 'Reset failed', 'error');
-  }
+  showConfirmModal({
+    title: 'Reset ALL Pipeline Settings',
+    message: 'Reset ALL pipeline settings to defaults? This cannot be undone.',
+    icon: '⚠️',
+    confirmText: 'Yes, Reset',
+    confirmType: 'danger',
+    onConfirm: async () => {
+      showGlobalLoader('Resetting...', 'Restoring hardcoded defaults.');
+      try {
+        const r = await fetch(`${API_BASE}/api/admin/pipeline-config/reset`, {
+          method: 'POST',
+          headers: hdr(),
+        });
+        const j = await r.json();
+        hideGlobalLoader();
+        if (!r.ok || !j.success) throw new Error(j.detail || 'Reset failed');
+        showToast(j.message || 'Pipeline settings reset!', 'success');
+        loadPipelineConfig();
+      } catch (err) {
+        hideGlobalLoader();
+        showToast(err.message || 'Reset failed', 'error');
+      }
+    }
+  });
 }
 
 

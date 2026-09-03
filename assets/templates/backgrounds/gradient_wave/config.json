@@ -1,0 +1,15 @@
+{
+  "template_id": "gradient_wave",
+  "name": "Gradient Wave",
+  "description": "Smooth cyber purple & cyan gradient motion",
+  "loop_duration": 10.0,
+  "caption_safe_zone": {
+    "y_min_pct": 0.6,
+    "y_max_pct": 0.9
+  },
+  "suggested_colors": {
+    "text": "255,255,255",
+    "highlight": "0,255,220",
+    "outline": "10,10,25"
+  }
+}

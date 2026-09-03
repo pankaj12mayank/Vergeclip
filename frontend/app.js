@@ -2,20 +2,6 @@
    app.js — PodcastShorts AI Generator & Gallery Client
    ========================================================================== */
 
-function getApiBase() {
-  const saved = localStorage.getItem('CUSTOM_API_BASE');
-  if (saved) return saved;
-  if (window.location.origin && window.location.origin !== 'null' && window.location.protocol !== 'file:') {
-    if (window.location.port === '5000') {
-      return window.location.origin;
-    }
-    if (!window.location.port && !['localhost', '127.0.0.1'].includes(window.location.hostname)) {
-      return window.location.origin;
-    }
-  }
-  return 'http://localhost:5000';
-}
-
 let API_BASE = getApiBase();
 let allRenderedClips = [];
 let pollInterval = null;
@@ -41,12 +27,8 @@ function buildVideoSrc(filename) {
   return t ? `${base}?token=${encodeURIComponent(t)}` : base;
 }
 
-function escapeHtml(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
 /* ─── Mode Switcher (URL vs Topic/Prompt) ─────────────────────────────────── */
-window.switchGenMode = function(mode) {
+window.switchGenMode = function (mode) {
   const btnUrl = document.getElementById('tabModeUrl');
   const btnTopic = document.getElementById('tabModeTopic');
   const wrapUrl = document.getElementById('modeUrlWrap');
@@ -61,12 +43,12 @@ window.switchGenMode = function(mode) {
     if (btnUrl) btnUrl.className = 'btn-outline btn-sm';
     if (btnTopic) btnTopic.className = 'btn-primary btn-sm';
     if (wrapUrl) wrapUrl.style.display = 'none';
-    if (wrapTopic) wrapTopic.style.display = 'flex';
+    if (wrapTopic) wrapTopic.style.display = 'block';
   }
 };
 
 /* ─── Clipboard Paste Helper ─────────────────────────────────────────────── */
-window.pasteFromClipboard = async function() {
+window.pasteFromClipboard = async function () {
   try {
     const text = await navigator.clipboard.readText();
     if (text) {
@@ -82,7 +64,7 @@ window.pasteFromClipboard = async function() {
 };
 
 /* ─── Change Backend Server URL ──────────────────────────────────────────── */
-window.promptBackendUrl = function() {
+window.promptBackendUrl = function () {
   const current = localStorage.getItem('CUSTOM_API_BASE') || API_BASE;
   const input = prompt('Enter your Backend API Server URL (e.g. http://localhost:5000):', current);
   if (input !== null) {
@@ -141,14 +123,14 @@ async function checkBackendHealth() {
         API_BASE = ep.replace('/api/status', '');
         return;
       }
-    } catch (e) {}
+    } catch (e) { }
   }
   if (dot) dot.className = 'status-dot red';
   if (lbl) lbl.textContent = 'Backend Offline';
 }
 
 /* ─── Start Auto-Generate Pipeline ───────────────────────────────────────── */
-window.startAutoGenerate = async function() {
+window.startAutoGenerate = async function () {
   const url = document.getElementById('ytUrl')?.value.trim();
   if (!url) {
     showToast('Please paste a YouTube link to generate shorts.', 'error');
@@ -166,7 +148,7 @@ window.startAutoGenerate = async function() {
         setTimeout(() => window.location.href = 'login.html?next=index.html', 700);
         return;
       }
-    } catch {}
+    } catch { }
   }
 
   const btn = document.getElementById('autoGenerateBtn');
@@ -296,7 +278,7 @@ function resetSteppers(activeStepId = 'step-download') {
 /* ─── Pipeline Progress Monitoring ───────────────────────────────────────── */
 function pollPipelineProgress() {
   if (pollInterval) clearInterval(pollInterval);
-  if (sseSource) { try { sseSource.close(); } catch {} sseSource = null; }
+  if (sseSource) { try { sseSource.close(); } catch { } sseSource = null; }
 
   let sseFailed = false;
   try {
@@ -315,7 +297,7 @@ function pollPipelineProgress() {
             sseSource = null;
             if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
           }
-        } catch {}
+        } catch { }
       };
       es.onerror = () => {
         es.close();
@@ -324,7 +306,7 @@ function pollPipelineProgress() {
       };
       setTimeout(() => {
         if (sseSource && sseSource.readyState !== 1) {
-          try { sseSource.close(); } catch {}
+          try { sseSource.close(); } catch { }
           sseSource = null;
           startPoll();
         }
@@ -354,9 +336,9 @@ function pollPipelineProgress() {
         if (p.status === 'completed' || p.status === 'error') {
           clearInterval(pollInterval);
           pollInterval = null;
-          if (sseSource) { try { sseSource.close(); } catch {} sseSource = null; }
+          if (sseSource) { try { sseSource.close(); } catch { } sseSource = null; }
         }
-      } catch (e) {}
+      } catch (e) { }
     }, 1000);
   }
 
@@ -457,7 +439,7 @@ window.addEventListener('pagehide', () => {
       const token = typeof getAuthToken === 'function' ? getAuthToken() : '';
       const blob = new Blob([], { type: 'application/json' });
       navigator.sendBeacon(`${API_BASE}/api/pipeline/cancel` + (token ? `?token=${encodeURIComponent(token)}` : ''), blob);
-    } catch {}
+    } catch { }
   }
 });
 
@@ -482,7 +464,7 @@ document.addEventListener('click', (e) => {
               method: 'POST',
               headers: token ? { 'Authorization': `Bearer ${token}` } : {},
             });
-          } catch {}
+          } catch { }
           window.location.href = href;
         }
       });
@@ -509,7 +491,7 @@ document.addEventListener('keydown', (e) => {
             method: 'POST',
             headers: token ? { 'Authorization': `Bearer ${token}` } : {},
           });
-        } catch {}
+        } catch { }
         window.location.reload();
       }
     });
@@ -517,18 +499,18 @@ document.addEventListener('keydown', (e) => {
 });
 
 /* ─── In-App Password Change Modal Helper ─────────────────────────────────── */
-window.openChangePasswordModal = function() {
+window.openChangePasswordModal = function () {
   let modal = document.getElementById('changePasswordModal');
   if (modal) modal.style.display = 'flex';
 };
 
-window.closeChangePasswordModal = function(e) {
+window.closeChangePasswordModal = function (e) {
   if (e && e.target && e.target.id !== 'changePasswordModal' && !e.target.classList.contains('modal-close-btn')) return;
   const modal = document.getElementById('changePasswordModal');
   if (modal) modal.style.display = 'none';
 };
 
-window.submitChangePassword = async function() {
+window.submitChangePassword = async function () {
   const old_password = document.getElementById('cp_old_password')?.value;
   const new_password = document.getElementById('cp_new_password')?.value;
   const confirm_password = document.getElementById('cp_confirm_password')?.value;
@@ -560,7 +542,7 @@ window.submitChangePassword = async function() {
 };
 
 /* ─── Gallery Refresh & Rendering ────────────────────────────────────────── */
-window.refreshOutputs = async function() {
+window.refreshOutputs = async function () {
   try {
     const headers = {};
     const tk = getAuthToken();
@@ -622,7 +604,7 @@ function renderGalleryGrid(clips) {
 
     // Hover auto-preview
     card.addEventListener('mouseenter', () => {
-      vid.play().catch(() => {});
+      vid.play().catch(() => { });
     });
     card.addEventListener('mouseleave', () => {
       vid.pause();
@@ -703,7 +685,7 @@ function renderGalleryGrid(clips) {
 }
 
 /* ─── Clear All & Delete Actions with Glassmorphic Confirmation Modal ─────── */
-window.clearAllOutputs = async function() {
+window.clearAllOutputs = async function () {
   showConfirmModal({
     title: 'Clear All Generated Shorts',
     message: 'Are you sure you want to delete all rendered video clips in your gallery? This will free up storage space and cannot be recovered.',
@@ -735,7 +717,7 @@ window.clearAllOutputs = async function() {
   });
 };
 
-window.deleteSingleOutput = async function(filename) {
+window.deleteSingleOutput = async function (filename) {
   showConfirmModal({
     title: 'Delete Short Video',
     message: `Are you sure you want to permanently delete "${filename}"?`,
@@ -773,7 +755,7 @@ window.deleteSingleOutput = async function(filename) {
 };
 
 /* ─── Topic / Prompt To Short Generator (No Video Needed Mode) ───────────── */
-window.generateFromTopic = async function() {
+window.generateFromTopic = async function () {
   const topic = document.getElementById('topicInput')?.value.trim();
   const niche = document.getElementById('topicNiche')?.value || 'Mindset & Psychology';
   const tone = document.getElementById('topicTone')?.value || 'High Energy Viral';
@@ -787,11 +769,14 @@ window.generateFromTopic = async function() {
 
   showGlobalLoader('Crafting Viral AI Script...', 'Structuring 3-second hook, high-retention body, and SEO tags.');
   try {
-    const res = await fetch(`${API_BASE}/api/pipeline/generate-from-topic`, {
+    const res = await (typeof authFetch === 'function' ? authFetch(`${API_BASE}/api/pipeline/generate-from-topic`, {
+      method: 'POST',
+      body: JSON.stringify({ topic, niche, tone, duration })
+    }) : fetch(`${API_BASE}/api/pipeline/generate-from-topic`, {
       method: 'POST',
       headers: (typeof authHeaders === 'function' ? authHeaders() : { 'Content-Type': 'application/json' }),
       body: JSON.stringify({ topic, niche, tone, duration })
-    });
+    }));
     const data = await res.json();
     hideGlobalLoader();
 
@@ -853,7 +838,7 @@ function showScriptModal(scriptText, topicTitle) {
   };
 }
 
-window.copyScriptText = function() {
+window.copyScriptText = function () {
   const content = document.getElementById('scriptModalContent')?.textContent || '';
   if (navigator.clipboard) {
     navigator.clipboard.writeText(content);
@@ -861,7 +846,7 @@ window.copyScriptText = function() {
   }
 };
 
-window.generateVideoFromScript = async function() {
+window.generateVideoFromScript = async function () {
   const modal = document.getElementById('scriptResultModal');
   if (!modal) return;
 
@@ -918,8 +903,8 @@ window.generateVideoFromScript = async function() {
   const progressSteps = [
     { pct: 10, phase: 'download', text: 'Phase 1/3: Synthesizing TTS voiceover with word timing...', log: '> TTS engine processing voiceover text...' },
     { pct: 25, phase: 'download', text: 'Phase 1/3: TTS voiceover generating...', log: '> Voiceover synthesis in progress...' },
-    { pct: 40, phase: 'transcribe', text: 'Phase 2/3: Generating AI scene backgrounds...', log: '> Scene generation starting...' },
-    { pct: 55, phase: 'transcribe', text: 'Phase 2/3: Creating scene visuals per section...', log: '> Rendering AI scene images for each section...' },
+    { pct: 40, phase: 'transcribe', text: 'Phase 2/3: Generating AI video scenes...', log: '> Scene generation starting...' },
+    { pct: 55, phase: 'transcribe', text: 'Phase 2/3: Rendering real AI video clips per section (motion)...', log: '> Generating AI video scene clips for each section...' },
     { pct: 70, phase: 'select', text: 'Phase 3/3: Encoding video with word-synced captions...', log: '> FFmpeg encoding HD 9:16 video...' },
     { pct: 85, phase: 'select', text: 'Phase 3/3: Applying animations and captions...', log: '> Zoompan animations, caption overlay...' },
     { pct: 95, phase: 'select', text: 'Phase 3/3: Finalizing video output...', log: '> Writing final MP4 to disk...' },
@@ -943,15 +928,15 @@ window.generateVideoFromScript = async function() {
   btn.style.opacity = '0.6';
 
   try {
-    const token = localStorage.getItem('auth_token') || sessionStorage.getItem('auth_token');
-    const headers = { 'Content-Type': 'application/json' };
-    if (token) headers['Authorization'] = 'Bearer ' + token;
-
-    const res = await fetch('/api/pipeline/script-to-video', {
+    const res = await (typeof authFetch === 'function' ? authFetch('/api/pipeline/script-to-video', {
       method: 'POST',
-      headers,
-      body: JSON.stringify({ script: scriptText }),
-    });
+      body: JSON.stringify({ script: scriptText })
+    }) : (() => {
+      const token = getAuthToken();
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+      return fetch('/api/pipeline/script-to-video', { method: 'POST', headers, body: JSON.stringify({ script: scriptText }) });
+    })());
 
     const data = await res.json();
 
@@ -1012,7 +997,7 @@ window.generateVideoFromScript = async function() {
 };
 
 /* ─── Fullscreen Video Modal ─────────────────────────────────────────────── */
-window.openVideoModal = function(filename) {
+window.openVideoModal = function (filename) {
   const modal = document.getElementById('videoModal');
   const player = document.getElementById('modalVideoPlayer');
   const title = document.getElementById('modalVideoTitle');
@@ -1023,7 +1008,7 @@ window.openVideoModal = function(filename) {
   const videoUrl = buildVideoSrc(safe);
   player.src = videoUrl;
   player.load();
-  player.play().catch(() => {});
+  player.play().catch(() => { });
 
   if (title) title.textContent = safe;
   if (dlBtn) { dlBtn.href = videoUrl; dlBtn.download = safe; }
@@ -1032,7 +1017,7 @@ window.openVideoModal = function(filename) {
   document.body.style.overflow = 'hidden';
 };
 
-window.closeVideoModal = function(e) {
+window.closeVideoModal = function (e) {
   if (e && e.target && e.target.id !== 'videoModal' && !e.target.classList.contains('modal-close-btn')) return;
   const modal = document.getElementById('videoModal');
   const player = document.getElementById('modalVideoPlayer');
@@ -1043,7 +1028,7 @@ window.closeVideoModal = function(e) {
 
 /* ─── Global Toast Fallback (Uses auth.js primary) ────────────────────────── */
 if (typeof window.showToast !== 'function') {
-  window.showToast = function(msg, type = 'info') {
+  window.showToast = function (msg, type = 'info') {
     alert(msg);
   };
 }

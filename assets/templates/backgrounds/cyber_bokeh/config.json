@@ -1,0 +1,15 @@
+{
+  "template_id": "cyber_bokeh",
+  "name": "Cyber Bokeh",
+  "description": "Soft floating neon light circles",
+  "loop_duration": 10.0,
+  "caption_safe_zone": {
+    "y_min_pct": 0.6,
+    "y_max_pct": 0.9
+  },
+  "suggested_colors": {
+    "text": "255,255,255",
+    "highlight": "255,80,200",
+    "outline": "0,0,0"
+  }
+}

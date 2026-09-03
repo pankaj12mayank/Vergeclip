@@ -632,9 +632,6 @@ def get_all_pipeline_config() -> dict:
         "captions": get_caption_config(),
         "enhancement": get_enhancement_config(),
         "semantic_ranking": get_semantic_ranking_config(),
-        "video_gen_provider": get_setting("video_gen_provider", ""),
-        "pollinations_api_key": get_setting("pollinations_api_key", ""),
-        "agnes_api_key": get_setting("agnes_api_key", ""),
         "comfyui_url": get_setting("comfyui_url", "http://127.0.0.1:8188"),
         "timezone": get_setting("timezone", "Asia/Kolkata"),
     }

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import re
+import secrets
 import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
@@ -41,12 +42,28 @@ log = get_logger("auth")
 # ── Config ────────────────────────────────────────────────────────────────────
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY", os.environ.get("SECRET_KEY", "")).strip()
 if not SECRET_KEY:
+    # Persisted per-install secret (generated once, stable across restarts).
+    # Fallback to dev constant ONLY if the secret file cannot be written.
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        _sec_file = DATA_DIR / ".jwt_secret"
+        if _sec_file.exists():
+            SECRET_KEY = _sec_file.read_text(encoding="utf-8").strip()
+        if not SECRET_KEY:
+            SECRET_KEY = secrets.token_hex(32)
+            _sec_file.write_text(SECRET_KEY, encoding="utf-8")
+    except Exception:
+        pass
+if not SECRET_KEY:
     # Dev fallback - warn loudly
     SECRET_KEY = "dev-only-jwt-secret-change-in-production-please-set-JWT_SECRET_KEY"
-    log.warning("JWT_SECRET_KEY not set - using insecure dev fallback. Set JWT_SECRET_KEY env var in production!")
+    log.warning("JWT_SECRET_KEY not set and secret file unavailable - using insecure dev fallback. Set JWT_SECRET_KEY env var in production!")
 
 ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256").strip() or "HS256"
 EXPIRE_MINUTES = int(os.environ.get("JWT_EXPIRE_MIN", os.environ.get("JWT_EXPIRE_MINUTES", "120")) or 120)
+# Admins default to the exact same expiry as users (2h). Set JWT_ADMIN_EXPIRE_MIN
+# to override (e.g. 1440) if you want long-lived admin sessions.
+ADMIN_EXPIRE_MINUTES = int(os.environ.get("JWT_ADMIN_EXPIRE_MIN", os.environ.get("JWT_ADMIN_EXPIRE_MINUTES", str(EXPIRE_MINUTES))) or EXPIRE_MINUTES)
 AUTH_REQUIRED = os.environ.get("AUTH_REQUIRED", "false").lower() in ("1", "true", "yes", "on")
 
 # Bcrypt context - passlib handles salt/rounds
@@ -188,6 +205,8 @@ def verify_password(plain: str, hashed: str) -> bool:
 # ── JWT helpers ───────────────────────────────────────────────────────────────
 def create_access_token(data: dict, expires_minutes: Optional[int] = None) -> str:
     to_encode = data.copy()
+    if expires_minutes is None and str(to_encode.get("role", "")).lower() == "admin":
+        expires_minutes = ADMIN_EXPIRE_MINUTES  # admin policy — by default same as users (2h)
     expire = datetime.now(timezone.utc) + timedelta(minutes=expires_minutes or EXPIRE_MINUTES)
     to_encode.update({"exp": expire, "iat": datetime.now(timezone.utc)})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)

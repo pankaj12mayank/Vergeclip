@@ -1,6 +1,17 @@
-# Render Blueprint — Vergeclip AI (Docker deployment)
-# Set long-lived secrets (JWT_SECRET_KEY, API keys) in the Render dashboard
-# Environment → Secrets rather than committing them here.
+# ==============================================================================
+# Render Blueprint — Vergeclip AI
+# ==============================================================================
+# Docker-based deployment for Render.com.
+# Set all secrets in the Render dashboard (Environment → Secrets) — never commit them.
+#
+# Secrets you MUST set in the Render UI:
+#   JWT_SECRET_KEY    →  python -c "import secrets; print(secrets.token_urlsafe(32))"
+#   VIDEOSAILOR_API_KEY
+#   GROQ_API_KEY
+#   ASSEMBLYAI_API_KEY
+#   GOOGLE_API_KEY
+#   OPENAI_API_KEY
+# ==============================================================================
 services:
   - type: web
     name: vergeclip
@@ -11,28 +22,44 @@ services:
     autoDeploy: true
     envVars:
       - key: PORT
-        value: 5000
+        value: "5000"
       - key: HOST
-        value: 0.0.0.0
-      # AUTH: set to true to require login for pipeline/config/delete
+        value: "0.0.0.0"
       - key: AUTH_REQUIRED
         value: "false"
-      # Optional AI providers (can also be configured live in Admin Portal)
+      - key: CORS_ORIGINS
+        value: "*"
+      # ── Video downloader ──
       - key: VIDEOSAILOR_API_KEY
         sync: false
+      # ── Transcription ──
+      - key: TRANSCRIPTION_PROVIDER
+        value: "groq"
       - key: GROQ_API_KEY
         sync: false
       - key: ASSEMBLYAI_API_KEY
         sync: false
+      # ── AI ranking / LLM ──
+      - key: RANKING_PROVIDER
+        value: "gemini"
       - key: GOOGLE_API_KEY
         sync: false
       - key: OPENAI_API_KEY
         sync: false
-      - key: RANKING_PROVIDER
-        value: gemini
-      # JWT_SECRET_KEY is REQUIRED for auth: generate with
-      #   python -c "import secrets; print(secrets.token_urlsafe(32))"
+      - key: CUSTOM_AI_BASE_URL
+        value: "https://api.groq.com/openai/v1"
+      - key: CUSTOM_AI_API_KEY
+        sync: false
+      - key: CUSTOM_AI_MODEL
+        value: "llama-3.1-8b-instant"
+      # ── Auth (REQUIRED) ──
       - key: JWT_SECRET_KEY
         sync: false
+      - key: JWT_EXPIRE_MIN
+        value: "10080"
+      # ── ComfyUI (optional, GPU required — not used in cloud) ──
+      - key: COMFYUI_URL
+        value: "http://127.0.0.1:8188"
+      # ── Storage ──
       - key: DISK
-        value: data
+        value: "data"

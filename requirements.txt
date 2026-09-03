@@ -3,13 +3,13 @@
 # ------------------------------------------------------------------------------
 # `pip install -r requirements.txt` installs EVERYTHING the web app needs to run
 # (FastAPI, OpenCV, Pillow, yt-dlp, SQLAlchemy, JWT, faster-whisper, edge-tts,
-# psutil, providers, ...). Verified fresh-install compatible.
+# huggingface_hub, psutil, providers…). Verified fresh-install compatible.
 #
-# ⚠️ LOCAL AI VIDEO GENERATION (CogVideoX-2B via ComfyUI) uses a SEPARATE
-#    runtime with its own manifest:  `requirements-local.txt`
-#    Install that into `comfyui/.venv` (NOT this venv) via the one-shot setup:
-#        .\scripts\setup_comfyui_cogvideo.ps1
-#    Only needed if you want fully-offline GPU scene/clip generation.
+# ⚠️  LOCAL AI VIDEO GENERATION (Wan2.1 / LTX-Video via ComfyUI) uses a SEPARATE
+#     runtime: `requirements-local.txt` → installed into `comfyui/.venv`
+#     via Admin UI (🔧 Setup & Start button) or:
+#         .\scripts\setup_comfyui_wan.ps1
+#     Only needed for fully-offline GPU scene/clip generation.
 # ==============================================================================
 
 # ── Core & Configuration ──────────────────────────────────────────────────────
@@ -27,10 +27,12 @@ pydantic-settings>=2.1.0
 python-multipart>=0.0.9       # required by FastAPI for multipart/form parsing
 email-validator>=2.1.0        # required by Pydantic EmailStr validation
 
-# ── AI / LLM Providers (routed via HTTP in semantic_ranker/transcriber) ───────
-google-generativeai>=0.8.0    # Gemini provider (admin live-config)
-openai>=1.14.0                # OpenAI / Groq / OpenRouter-compatible provider
+# ── AI / LLM Providers ─────────────────────────────────────────────────────────
+# Used by app/semantic_ranker.py (routed via HTTP — no model files needed)
+google-generativeai>=0.8.0    # Gemini: set GOOGLE_API_KEY + RANKING_PROVIDER=gemini
+openai>=1.14.0                # OpenAI / Groq / OpenRouter / DeepSeek (OpenAI-compatible)
 assemblyai>=0.20.0            # AssemblyAI cloud transcription
+huggingface_hub>=0.24.0       # Auto-download of HF models; used by comfyui/setup endpoint
 
 # ── Video Processing & Computer Vision ────────────────────────────────────────
 opencv-python>=4.9.0
@@ -39,8 +41,8 @@ numpy>=1.26.0
 yt-dlp>=2024.3.10
 imageio-ffmpeg>=0.4.9         # bundles an FFmpeg binary as PATH fallback
 
-# ── Transcription & Audio (local engines) ─────────────────────────────────────
-faster-whisper>=1.0.0         # local speech-to-text provider (app/transcriber.py)
+# ── Transcription & Audio ─────────────────────────────────────────────────────
+faster-whisper>=1.0.0         # local STT provider (app/transcriber.py); wrapped in try/except
 edge-tts>=6.1.0               # TTS engine for script-to-video narration
 
 # ── Database & Persistence (SQLite default; Postgres/async optional) ───────────
@@ -53,10 +55,3 @@ alembic>=1.13.0
 PyJWT>=2.8.0
 passlib[bcrypt]>=1.7.4
 bcrypt>=4.0.1
-
-# ── OPTIONAL: CUDA-accelerated faster-whisper device auto-detect ──────────────
-# The faster-whisper import in app/transcriber.py:525 is wrapped in try/except
-# and gracefully falls back to CPU, so torch is NOT required for the product to
-# run. Uncomment ONLY if you want automatic GPU (CUDA) detection for local
-# transcription on a machine with an NVIDIA GPU:
-# torch>=2.0.0

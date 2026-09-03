@@ -1,7 +1,7 @@
 # ==============================================================================
-# Production Dockerfile for Podcast Shorts Generator
+# Vergeclip AI — Production Dockerfile
 # ==============================================================================
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 # Prevent Python from writing .pyc files and enable unbuffered logging
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Set working directory
 WORKDIR /app
 
-# Install Python dependencies first for caching (suppress root user warning)
+# Copy requirements first for Docker layer caching
 COPY requirements.txt .
 RUN pip install --no-cache-dir --root-user-action=ignore --upgrade pip && \
     pip install --no-cache-dir --root-user-action=ignore -r requirements.txt
@@ -29,15 +29,14 @@ RUN pip install --no-cache-dir --root-user-action=ignore --upgrade pip && \
 COPY . .
 
 # Ensure storage directories exist
-RUN mkdir -p input output temp logs data frontend
+RUN mkdir -p input output temp logs data frontend storage
 
 # Expose server port
 EXPOSE 5000
 
-# Health check (supports FastAPI /health)
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+# Health check (FastAPI /health endpoint)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -f http://localhost:${PORT:-5000}/health || exit 1
 
-# Start the unified web server & API (FastAPI + Uvicorn, fast, supports --reload)
-# Use shell form to allow $PORT expansion; uvicorn handles $PORT correctly
-CMD python server.py --host 0.0.0.0 --port ${PORT:-5000}
+# Start the Vergeclip web server
+CMD ["python", "server.py", "--host", "0.0.0.0", "--port", "5000"]

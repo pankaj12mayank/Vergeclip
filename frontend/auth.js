@@ -17,30 +17,35 @@ function clearAuth() {
   localStorage.removeItem(AUTH_USER_KEY);
 }
 
-function isTokenExpired(token) {
-  if (!token) return true;
+function _decodeJwtPayload(token) {
+  if (!token) return null;
   try {
-    const payload = JSON.parse(atob(token.split('.')[1]));
-    const exp = payload.exp * 1000;
-    return Date.now() >= exp;
-  } catch { return true; }
+    const part = token.split('.')[1];
+    if (!part) return null;
+    let b64 = part.replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4 !== 0) b64 += '=';
+    return JSON.parse(atob(b64));
+  } catch { return null; }
+}
+
+function isTokenExpired(token) {
+  const payload = _decodeJwtPayload(token);
+  if (!payload || !payload.exp) return true;
+  return Date.now() >= payload.exp * 1000;
 }
 
 function getTokenTimeLeft(token) {
-  if (!token) return 0;
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1]));
-    const exp = payload.exp * 1000;
-    return Math.max(0, exp - Date.now());
-  } catch { return 0; }
+  const payload = _decodeJwtPayload(token);
+  if (!payload || !payload.exp) return 0;
+  return Math.max(0, payload.exp * 1000 - Date.now());
 }
 
 function autoLogoutIfExpired() {
   const t = getToken();
   if (t && isTokenExpired(t)) {
     clearAuth();
-    showToast('Session expired. Please sign in again.', 'warning');
-    setTimeout(() => { location.href = 'login.html'; }, 1200);
+    if (typeof showToast === 'function') showToast('Session expired. Please sign in again.', 'warning');
+    setTimeout(() => { if (!/login\.html|signup\.html/.test(location.pathname)) location.href = 'login.html'; }, 1200);
     return true;
   }
   return false;
@@ -48,7 +53,11 @@ function autoLogoutIfExpired() {
 
 async function autoRefreshToken() {
   const t = getToken();
-  if (!t || isTokenExpired(t)) return;
+  if (!t) return;
+  if (isTokenExpired(t)) {
+    autoLogoutIfExpired();
+    return;
+  }
   const timeLeft = getTokenTimeLeft(t);
   if (timeLeft < 30 * 60 * 1000) {
     try {
@@ -57,12 +66,43 @@ async function autoRefreshToken() {
         headers: { 'Authorization': 'Bearer ' + t, 'Content-Type': 'application/json' }
       });
       const j = await r.json();
-      if (j.access_token) setToken(j.access_token);
+      if (j.access_token) {
+        setToken(j.access_token);
+        const u = getUser();
+        if (u) setUser({ ...u, token_refreshed_at: new Date().toISOString() });
+      } else if (r.status === 401) {
+        autoLogoutIfExpired();
+      }
     } catch {}
   }
 }
 
-setInterval(autoRefreshToken, 5 * 60 * 1000);
+setInterval(() => { autoLogoutIfExpired() || autoRefreshToken(); }, 5 * 60 * 1000);
+
+// ─── Automatic-auth fetch: attaches token + device-id, and on a stale token
+// (401 / guest-trial 403) silently refreshes once and retries. Guarantees the
+// admin/system owner never sees "403 Forbidden" just because the token expired.
+async function authFetch(url, options = {}, _retried = false) {
+  const opts = { ...options, headers: authHeaders(options.headers || {}) };
+  const res = await fetch(url, opts);
+  if (!_retried && (res.status === 401 || res.status === 403) && getToken()) {
+    try {
+      const rr = await fetch(`${getApiBase()}/api/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + getToken(), 'Content-Type': 'application/json' }
+      });
+      const jj = await rr.json();
+      if (jj.access_token) {
+        setToken(jj.access_token);
+        return authFetch(url, options, true);
+      }
+    } catch {}
+    // Refresh failed (hard-expired token) — clear and ask to sign in again.
+    clearAuth();
+    if (!/login\.html|signup\.html/.test(location.pathname)) location.href = 'login.html';
+  }
+  return res;
+}
 
 function getUser() {
   try { return JSON.parse(localStorage.getItem(AUTH_USER_KEY) || 'null'); } catch { return null; }
@@ -121,7 +161,7 @@ function authHeaders(extra = {}) {
 }
 
 function escapeHtml(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 /* ─── 1. Human-Friendly Error Message Translator ─────────────────────────── */
@@ -627,13 +667,6 @@ async function updateAuthUI() {
     if (authLoggedIn) authLoggedIn.style.display = 'none';
     if (authLoggedOut) authLoggedOut.style.display = 'flex';
   }
-}
-
-function authHeaders() {
-  const t = getToken();
-  const h = { 'Content-Type': 'application/json' };
-  if (t) h['Authorization'] = 'Bearer ' + t;
-  return h;
 }
 
 document.addEventListener('DOMContentLoaded', () => {

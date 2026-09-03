@@ -32,6 +32,10 @@ log = get_logger(__name__)
 OUTPUT_MIN_DUR = 15.0
 OUTPUT_MAX_DUR = 20.0
 
+# Hard ceiling for a single ffmpeg extract call (bumped up — a 4K/60 source
+# re-encoded with libx264 can legitimately exceed the old 300s budget).
+EXTRACT_TIMEOUT = 600
+
 
 @dataclass
 class ClipInfo:
@@ -138,9 +142,11 @@ def _trim_to_duration(
 
 
 def _run_ffmpeg(cmd: list[str]) -> None:
-    """Run FFmpeg command, raise on failure with full output."""
+    """Run FFmpeg via the hardened runner, raise on failure with full output."""
+    from src.ffmpeg_utils import run_ffmpeg
+
     log.debug("FFmpeg: %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    result = run_ffmpeg(cmd, timeout=EXTRACT_TIMEOUT)
     if result.returncode != 0:
         raise RuntimeError(
             f"FFmpeg failed (code {result.returncode}).\n"
@@ -183,13 +189,14 @@ def extract_clip(
     cmd = [
         FFMPEG_BIN,
         "-y",
+        "-threads", "0",
         "-ss", f"{pre_seek:.3f}",
         "-i", str(source_video),
         "-ss", f"{in_seek:.3f}",
         "-t", f"{duration:.3f}",
         "-c:v", "libx264",
         "-crf", "18",
-        "-preset", "fast",
+        "-preset", "veryfast",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", "192k",

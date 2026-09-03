@@ -1,0 +1,15 @@
+{
+  "template_id": "abstract_neon",
+  "name": "Abstract Neon",
+  "description": "Vibrant pulsing neon geometric energy",
+  "loop_duration": 10.0,
+  "caption_safe_zone": {
+    "y_min_pct": 0.6,
+    "y_max_pct": 0.9
+  },
+  "suggested_colors": {
+    "text": "255,255,255",
+    "highlight": "255,210,40",
+    "outline": "15,15,30"
+  }
+}

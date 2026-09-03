@@ -35,6 +35,10 @@ def get_or_create_device(device_id: str, ip: str | None = None, db: Session | No
             if ip and not dev.ip_address:
                 dev.ip_address = ip
             db.commit()
+        # Heal legacy auto-blocks (see check_device_trial for rationale)
+        if dev.is_blocked and dev.trials_used >= 1:
+            dev.is_blocked = False
+            db.commit()
         db.refresh(dev)
         return dev
     finally:
@@ -75,6 +79,14 @@ def check_device_trial(device_id: str, ip: str | None = None, db: Session | None
             if ip and not dev.ip_address:
                 dev.ip_address = ip
             db.commit()
+        # Heal legacy rows: the old code auto-"blocked" every device after its
+        # single trial, which falsely read as "blocked by admin" forever. There is
+        # no manual block feature, so any such block was automatic — clear it. The
+        # exhausted trial itself still counts via trials_used.
+        if dev.is_blocked and dev.trials_used >= 1:
+            dev.is_blocked = False
+            dev.last_seen = datetime.now(timezone.utc)
+            db.commit()
         # Read all attributes into locals before session closes
         is_blocked = dev.is_blocked
         trials_used = dev.trials_used
@@ -107,12 +119,13 @@ def consume_device_trial(device_id: str, ip: str | None = None, db: Session | No
         trials_used = dev.trials_used
         max_trials = dev.max_trials
         is_blocked = dev.is_blocked
-        if trials_used >= max_trials or is_blocked:
+        if dev.trials_used >= max_trials or dev.is_blocked:
             raise HTTPException(status_code=403, detail=f"Trial already used on this device ({trials_used}/{max_trials}). No more trials. Contact admin.")
         dev.trials_used += 1
         dev.last_seen = datetime.now(timezone.utc)
-        if dev.trials_used >= dev.max_trials:
-            dev.is_blocked = True  # Auto-block after 1 use as per plan
+        # NOTE: no auto-block here. An exhausted trial must NOT permanently lock a
+        # device behind a fake "blocked by admin" banner — only an explicit admin
+        # action (none exists today) should set is_blocked.
         db.commit()
         db.refresh(dev)
         # Read attributes into locals before session closes

@@ -1,5 +1,13 @@
+# ==============================================================================
 # Nixpacks configuration for Railway / Render (Non-Docker) / PaaS deployments.
-# Installs system FFmpeg, then Python deps from requirements.txt, then starts server.py.
+# ==============================================================================
+# Installs system FFmpeg, Python deps from requirements.txt, then starts server.py.
+#
+# ⚠️  Local Wan2.1 / LTX-Video (ComfyUI) requires an NVIDIA GPU — NOT available in
+#     most PaaS environments. Use fal.ai or Replicate for scene generation in
+#     cloud deployments (configure them live in Admin → Scene Generation).
+# ==============================================================================
+
 [phases.setup]
 nixPkgs = ["python311", "ffmpeg", "curl"]
 
@@ -11,7 +19,7 @@ cmds = [
 
 [phases.build]
 cmds = [
-  "mkdir -p input output temp logs data storage",
+  "mkdir -p input output temp logs data storage frontend",
 ]
 
 [start]
@@ -20,6 +28,7 @@ cmd = "python server.py --host 0.0.0.0 --port $PORT"
 [env]
 PYTHONUNBUFFERED = "1"
 HOST = "0.0.0.0"
-# Set in the platform dashboard (never committed):
-#   JWT_SECRET_KEY, VIDEOSAILOR_API_KEY, GROQ_API_KEY,
-#   ASSEMBLYAI_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY, AUTH_REQUIRED
+# Set in the platform dashboard (Environment → Secrets — never committed):
+#   JWT_SECRET_KEY, VIDEOSAILOR_API_KEY, GROQ_API_KEY, ASSEMBLYAI_API_KEY,
+#   GOOGLE_API_KEY, OPENAI_API_KEY, CUSTOM_AI_API_KEY, RANKING_PROVIDER,
+#   TRANSCRIPTION_PROVIDER, AUTH_REQUIRED

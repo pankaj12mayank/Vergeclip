@@ -79,38 +79,51 @@ def run_job_pipeline(job: Job, db: Session):
         else:
             _gm = get_setting("groq_whisper_model", "whisper-large-v3")
 
-        tr_result = transcribe_video(video_path=video_path, provider=_tp, model_name=_gm, language=None, keep_audio=False)
+        tr_result = transcribe_video(
+            video_path=video_path,
+            provider=_tp,
+            model_name=_gm,
+            language=None,
+            keep_audio=False,
+            json_path=job_temp / "transcript.json",
+            txt_path=job_temp / "transcript.txt",
+            audio_path=job_temp / "extracted_audio.mp3",
+        )
         _update_progress(job, db, 45)
 
         # Phase 3: Select
         _update_progress(job, db, 50)
         from app.clip_selector import run_selection
 
-        # Use job_temp for transcript path? Global TEMP_DIR already has transcript.json from transcribe_video
         report = run_selection(
-            transcript_path=TEMP_DIR / "transcript.json",
+            transcript_path=job_temp / "transcript.json",
             min_dur=15.0,
             max_dur=30.0,
             top_n=100,
             min_score=20.0,
             min_separation=20.0,
+            json_out=job_temp / "candidates.json",
+            txt_out=job_temp / "candidates.txt",
+            pool_out=job_temp / "candidate_pool.json",
+            work_dir=job_temp,
         )
         _update_progress(job, db, 65)
 
         # Phase 3.5: Rank
         _update_progress(job, db, 70)
-        candidates_json = TEMP_DIR / "candidates.json"
+        candidates_json = job_temp / "candidates.json"
         try:
             from app.semantic_ranker import run_semantic_ranking
 
             rank_target = report["final_count"]
             rank_result = run_semantic_ranking(
-                candidates_path=TEMP_DIR / "candidate_pool.json",
-                transcript_path=TEMP_DIR / "transcript.json",
+                candidates_path=job_temp / "candidate_pool.json",
+                transcript_path=job_temp / "transcript.json",
                 top_n=rank_target,
                 semantic_pool_size=max(rank_target, 50),
                 min_score=20.0,
                 min_separation=20.0,
+                json_out=job_temp / "semantic_candidates.json",
             )
             candidates_json = Path(rank_result["json_path"])
         except Exception as e:
@@ -143,8 +156,9 @@ def run_job_pipeline(job: Job, db: Session):
                     rank=idx,
                     output_filename=out_name,
                     video_path=video_path,
+                    temp_dir=job_temp,
                     candidates_path=candidates_json,
-                    transcript_path=TEMP_DIR / "transcript.json",
+                    transcript_path=job_temp / "transcript.json",
                 )
                 # Save to per-user storage + keep in output for backward compat
                 src_path = OUTPUT_DIR / out_name

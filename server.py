@@ -365,7 +365,7 @@ async def refresh_token(request: Request):
     if time_left_ms > 30 * 60 * 1000:  # More than 30 minutes left
         return {"success": True, "message": "Token still valid", "access_token": token, "expires_in": int(time_left_ms / 1000)}
 
-    # Generate new token
+    # Generate new token — preserves role-based expiry (admin gets 24h, user 2h).
     new_token = create_access_token({
         "sub": payload.get("sub"),
         "username": payload.get("username"),
@@ -373,12 +373,15 @@ async def refresh_token(request: Request):
         "role": payload.get("role"),
     })
     log_system_event("AUTH", "Token Refreshed", f"Token refreshed for user {payload.get('username')}", user_id=int(payload.get("sub", 0)), severity="INFO")
+    from src.auth import ADMIN_EXPIRE_MINUTES
+    _role = str(payload.get("role", "")).lower()
+    _actual_exp = (ADMIN_EXPIRE_MINUTES if _role == "admin" else EXPIRE_MINUTES) * 60
     return {
         "success": True,
         "message": "Token refreshed",
         "access_token": new_token,
         "token_type": "bearer",
-        "expires_in": EXPIRE_MINUTES * 60,
+        "expires_in": _actual_exp,
     }
 
 
@@ -1321,13 +1324,13 @@ async def admin_create_prompt(request: Request):
     _require_admin(request)
     body = await request.json()
     name = str(body.get("name", "")).strip()
-    version = str(body.get("version", "")).strip()
+    version = str(body.get("version", "")).strip() or "v1.0"
     system_prompt = str(body.get("system_prompt", "")).strip()
     user_template = str(body.get("user_template", "")).strip()
     model = str(body.get("model", "")).strip() or "gemini-3.6-flash"
     temp = float(body.get("temp", 0.1))
-    if not name or not version or not system_prompt:
-        raise HTTPException(status_code=400, detail="name, version, system_prompt required")
+    if not name or not system_prompt:
+        raise HTTPException(status_code=400, detail="name, system_prompt required")
     from src.models import Prompt, SessionLocal
 
     db = SessionLocal()
@@ -1382,6 +1385,95 @@ async def admin_update_prompt(prompt_id: int, request: Request):
         db.close()
 
 
+def _provider_readiness(provider: str) -> dict:
+    """
+    Inspect system config to decide whether `provider` is actually usable.
+    Returns a dict with: ready, label, reason, hint, default_model.
+    Used by live prompt test so we report a clear, actionable message
+    instead of bubbling up a raw 503 / connection-refused error.
+    """
+    from src.config import get_setting
+    p = (provider or "").lower().strip()
+
+    if p in ("custom", "custom_openai", "custom_openai_compatible", "deepseek", "groq", "openrouter"):
+        url = (get_setting("CUSTOM_AI_BASE_URL", "") or "").strip()
+        key = (get_setting("CUSTOM_AI_API_KEY", "") or get_setting("OPENAI_API_KEY", "") or "").strip()
+        model = (get_setting("CUSTOM_AI_MODEL", "") or "").strip() or "gpt-4o-mini"
+        if not url:
+            return {
+                "ready": False, "label": f"Custom AI ({p})",
+                "reason": "CUSTOM_AI_BASE_URL is not set.",
+                "hint": "Set CUSTOM_AI_BASE_URL (e.g. https://api.groq.com/openai/v1) and CUSTOM_AI_API_KEY in Settings.",
+                "default_model": model,
+            }
+        if not key:
+            return {
+                "ready": False, "label": f"Custom AI ({p})",
+                "reason": "CUSTOM_AI_API_KEY (or OPENAI_API_KEY) is not set.",
+                "hint": "Set CUSTOM_AI_API_KEY in Settings before live testing.",
+                "default_model": model,
+            }
+        return {
+            "ready": True, "label": f"Custom AI ({p})",
+            "default_model": model, "reason": "", "hint": "",
+        }
+
+    if p == "openai":
+        key = (get_setting("OPENAI_API_KEY", "") or "").strip()
+        if not key:
+            return {
+                "ready": False, "label": "OpenAI",
+                "reason": "OPENAI_API_KEY is not set.",
+                "hint": "Add your OpenAI key in Settings or .env to enable live tests.",
+                "default_model": "gpt-4o-mini",
+            }
+        return {
+            "ready": True, "label": "OpenAI",
+            "default_model": "gpt-4o-mini", "reason": "", "hint": "",
+        }
+
+    if p == "ollama":
+        url = (get_setting("OLLAMA_HOST", "http://localhost:11434") or "").strip()
+        model = (get_setting("OLLAMA_MODEL", "qwen2.5:3b") or "qwen2.5:3b").strip()
+        if not url:
+            return {
+                "ready": False, "label": "Ollama (local)",
+                "reason": "OLLAMA_HOST is not set.",
+                "hint": "Set OLLAMA_HOST (default http://localhost:11434) and ensure `ollama serve` is running.",
+                "default_model": model,
+            }
+        # Quick reachability probe so we can return a friendly message instead of a urllib error
+        try:
+            import urllib.request
+            with urllib.request.urlopen(f"{url.rstrip('/')}/api/tags", timeout=2) as r:
+                _ = r.read()
+        except Exception as e:
+            return {
+                "ready": False, "label": "Ollama (local)",
+                "reason": f"Cannot reach Ollama at {url}: {e}",
+                "hint": "Start Ollama (`ollama serve` or Ollama desktop) and confirm OLLAMA_HOST is correct.",
+                "default_model": model,
+            }
+        return {
+            "ready": True, "label": f"Ollama ({model})",
+            "default_model": model, "reason": "", "hint": "",
+        }
+
+    # gemini (default)
+    key = (get_setting("GOOGLE_API_KEY", "") or "").strip()
+    if not key:
+        return {
+            "ready": False, "label": "Google Gemini",
+            "reason": "GOOGLE_API_KEY is not set.",
+            "hint": "Either add GOOGLE_API_KEY in Settings to use Gemini, or switch RANKING_PROVIDER to 'ollama' / 'openai' / 'custom' in Settings.",
+            "default_model": "gemini-2.5-flash",
+        }
+    return {
+        "ready": True, "label": "Google Gemini",
+        "default_model": "gemini-2.5-flash", "reason": "", "hint": "",
+    }
+
+
 @app.post("/api/admin/prompts/{prompt_id}/test", tags=["admin"])
 async def admin_test_prompt(prompt_id: int, request: Request):
     _require_admin(request)
@@ -1407,19 +1499,67 @@ async def admin_test_prompt(prompt_id: int, request: Request):
                 pass
         # Simulate ranking call with prompt (don't actually call LLM for cost, just validate template)
         rendered = (p.user_template or "{{transcript}}").replace("{{transcript}}", sample[:500])
-        # Quick Gemini/OpenAI test if is ranker and has API key
-        test_result = {"rendered_preview": rendered[:800], "prompt_length": len(p.system_prompt), "model": p.model, "verified": True, "message": "Prompt template rendered successfully (no LLM call in test mode). Use Activate to make live."}
+        # Resolve provider/model from system config so live test matches the real pipeline
+        from src.config import get_setting, RANKING_PROVIDER as _DEFAULT_PROVIDER
+        active_provider = (get_setting("RANKING_PROVIDER", "") or _DEFAULT_PROVIDER or "gemini").lower().strip()
+        # Prompt can override the model (e.g. "gpt-4o-mini", "llama3.2:3b"); fallback to provider's default
+        prompt_model = (p.model or "").strip() or None
+        test_result = {
+            "rendered_preview": rendered[:800],
+            "prompt_length": len(p.system_prompt),
+            "model": prompt_model or "(provider default)",
+            "provider": active_provider,
+            "verified": True,
+            "message": "Prompt template rendered successfully (no LLM call in test mode). Use Live Test to actually call the configured LLM.",
+        }
         # Optionally do live LLM call if ?live=true
         if request.query_params.get("live") == "true":
-            try:
-                from app.semantic_ranker import _call_llm
-
-                resp = _call_llm(prompt=f"{p.system_prompt}\n\nTranscript: {sample[:800]}", system_prompt=None, provider="gemini")
-                test_result["live_llm_response"] = resp[:500]
-                test_result["message"] = "Live LLM call succeeded"
-            except Exception as e:
-                test_result["live_llm_error"] = str(e)[:500]
+            # Pre-flight: check the selected provider actually has its required config,
+            # so we return an actionable message instead of a cryptic 503 / connection error
+            pf_status = _provider_readiness(active_provider)
+            test_result["provider_status"] = pf_status
+            if not pf_status.get("ready", False):
                 test_result["verified"] = False
+                test_result["live_llm_error"] = pf_status.get("reason", "Provider not ready")
+                test_result["message"] = (
+                    f"Live test skipped: {active_provider} is not configured. "
+                    f"{pf_status.get('hint', 'Set the required key/URL in Settings or .env')}"
+                )
+            else:
+                try:
+                    from app.semantic_ranker import _call_llm
+                    # Pick model that actually works with the active provider
+                    # e.g. prompt has gemini-2.5-flash but provider is Groq/custom → must use llama
+                    live_model = prompt_model or pf_status.get("default_model")
+                    if active_provider in ("custom", "custom_openai", "custom_openai_compatible", "groq", "openrouter", "deepseek"):
+                        if live_model and "gemini" in live_model.lower():
+                            live_model = pf_status.get("default_model") or get_setting("CUSTOM_AI_MODEL", "llama-3.1-8b-instant")
+                    elif active_provider == "gemini":
+                        if live_model and ("gpt" in live_model.lower() or "llama" in live_model.lower() or "qwen" in live_model.lower()):
+                            live_model = pf_status.get("default_model") or "gemini-2.5-flash"
+                    elif active_provider == "openai":
+                        if live_model and ("gemini" in live_model.lower() or "llama" in live_model.lower()):
+                            live_model = "gpt-4o-mini"
+                    resp = _call_llm(
+                        prompt=f"{p.system_prompt}\n\nTranscript: {sample[:800]}",
+                        system_prompt=None,
+                        provider=active_provider,
+                        model=live_model,
+                    )
+                    test_result["live_llm_response"] = resp[:500]
+                    test_result["message"] = (
+                        f"Live LLM call succeeded via {pf_status.get('label', active_provider)}"
+                        + (f" using model '{live_model}'" if live_model else "")
+                    )
+                except Exception as e:
+                    err_text = str(e)
+                    test_result["live_llm_error"] = err_text[:500]
+                    test_result["verified"] = False
+                    test_result["message"] = (
+                        f"Live LLM call failed on {pf_status.get('label', active_provider)}"
+                        + (f" / model '{live_model}'" if live_model else "")
+                        + f": {err_text[:300]}"
+                    )
         return {"success": True, **test_result}
     finally:
         db.close()
@@ -1439,7 +1579,7 @@ async def admin_activate_prompt(prompt_id: int, request: Request):
         db.query(Prompt).filter(Prompt.name == p.name).update({"is_active": False})
         p.is_active = True
         db.commit()
-        return {"success": True, "message": f"Prompt {p.name}:{p.version} activated"}
+        return {"success": True, "message": f"Prompt {p.name} activated"}
     finally:
         db.close()
 
@@ -1799,6 +1939,200 @@ async def activate_custom_provider(provider_id: int, request: Request):
         db.close()
 
 
+# ── Scene Generation Providers (Script-to-Video) ────────────────────────────
+@app.get("/api/admin/scene-providers", tags=["admin"])
+async def list_scene_providers(request: Request):
+    """List all scene generation providers (keys masked)."""
+    _require_admin(request)
+    from src.scene_providers import list_provider_configs
+    return {"success": True, "providers": list_provider_configs()}
+
+
+@app.post("/api/admin/scene-providers", tags=["admin"])
+async def save_scene_provider(request: Request):
+    """Create/update a scene generation provider (key, model, endpoint, timeout)."""
+    _require_admin(request)
+    from src.models import SessionLocal, SceneProvider
+    from src.logger import log_system_event
+
+    body = await request.json()
+    provider_key = str(body.get("provider_key") or "").strip().lower()
+    name = str(body.get("name") or "").strip()
+    api_key = str(body.get("api_key") or "").strip()
+    model_name = str(body.get("model_name") or "").strip()
+    endpoint = str(body.get("endpoint") or "").strip()
+    try:
+        timeout = int(body.get("timeout_seconds") or 180)
+    except (TypeError, ValueError):
+        timeout = 180
+    is_active = bool(body.get("is_active", False))
+
+    if provider_key not in ("local", "fal", "replicate"):
+        raise HTTPException(status_code=400, detail=f"Unknown provider_key: {provider_key}")
+
+    db = SessionLocal()
+    try:
+        row = db.query(SceneProvider).filter(SceneProvider.provider_key == provider_key).first()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Provider '{provider_key}' not found")
+
+        if name:
+            row.name = name
+        if api_key:
+            # Blank api_key means "keep the existing one"; only overwrite when non-empty.
+            row.api_key = api_key
+        if model_name:
+            row.model_name = model_name
+        if endpoint:
+            row.endpoint = endpoint
+        row.timeout_seconds = timeout
+        if is_active:
+            db.query(SceneProvider).filter(SceneProvider.id != row.id).update({"is_active": False})
+            row.is_active = True
+        db.commit()
+        db.refresh(row)
+
+        log_system_event("CONFIG", "Scene Provider Saved", f"{row.name} ({provider_key})", severity="SUCCESS")
+        return {"success": True, "id": row.id, "message": f"Provider '{row.name}' saved!"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+@app.post("/api/admin/scene-providers/{provider_key}/activate", tags=["admin"])
+async def activate_scene_provider(provider_key: str, request: Request):
+    """Set a scene provider as active (deactivates others), with key validation."""
+    _require_admin(request)
+    from src.models import SessionLocal, SceneProvider
+    from src.scene_providers import get_provider_config
+    from src.logger import log_system_event
+
+    if provider_key not in ("local", "fal", "replicate"):
+        raise HTTPException(status_code=400, detail=f"Unknown provider_key: {provider_key}")
+
+    cfg = get_provider_config(provider_key)
+    if not cfg:
+        raise HTTPException(status_code=404, detail=f"Provider '{provider_key}' not found")
+
+    # Block selecting a cloud provider whose API key is missing.
+    if provider_key in ("fal", "replicate") and not cfg.get("api_key"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot activate '{cfg['name']}': no API key saved. Add the API key first.",
+        )
+
+    db = SessionLocal()
+    try:
+        db.query(SceneProvider).update({"is_active": False})
+        row = db.query(SceneProvider).filter(SceneProvider.provider_key == provider_key).first()
+        row.is_active = True
+        db.commit()
+        log_system_event("CONFIG", "Scene Provider Activated", f"Active provider: {row.name}", severity="SUCCESS")
+        return {"success": True, "message": f"Active provider set to '{row.name}'."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+@app.post("/api/admin/scene-providers/{provider_key}/clear-key", tags=["admin"])
+async def clear_scene_provider_key(provider_key: str, request: Request):
+    """Remove the saved API key from a scene provider."""
+    _require_admin(request)
+    from src.models import SessionLocal, SceneProvider
+    from src.logger import log_system_event
+
+    if provider_key not in ("local", "fal", "replicate"):
+        raise HTTPException(status_code=400, detail=f"Unknown provider_key: {provider_key}")
+
+    db = SessionLocal()
+    try:
+        row = db.query(SceneProvider).filter(SceneProvider.provider_key == provider_key).first()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Provider '{provider_key}' not found")
+        row.api_key = None
+        db.commit()
+        log_system_event("CONFIG", "Scene Provider Key Cleared", f"Cleared key for {row.name}", severity="WARN")
+        return {"success": True, "message": f"API key cleared for '{row.name}'."}
+    finally:
+        db.close()
+
+
+
+# ── Template Backgrounds (Tier 3) ────────────────────────────────────────────
+@app.get("/api/admin/template-backgrounds", tags=["admin"])
+async def admin_list_template_backgrounds(request: Request):
+    """List all discovered template backgrounds + which are enabled."""
+    _require_admin(request)
+    from src.template_backgrounds import discover_templates, get_enabled_templates
+    from src.config import get_setting
+    import json as _json
+    all_tpls = discover_templates()
+    enabled = get_enabled_templates()
+    enabled_ids = {t["template_id"] for t in enabled}
+    # Also expose raw DB setting for debugging
+    raw = get_setting("enabled_template_backgrounds", None)
+    return {
+        "success": True,
+        "templates": [
+            {
+                "template_id": t["template_id"],
+                "name": t.get("name", t["template_id"]),
+                "description": t.get("description", ""),
+                "loop_duration": t.get("loop_duration", 10.0),
+                "caption_safe_zone": t.get("caption_safe_zone", {}),
+                "suggested_colors": t.get("suggested_colors", {}),
+                "enabled": t["template_id"] in enabled_ids,
+                "mp4_exists": True,
+            }
+            for t in all_tpls
+        ],
+        "enabled_ids": sorted(enabled_ids),
+        "raw_setting": raw,
+        "count": len(all_tpls),
+    }
+
+
+@app.post("/api/admin/template-backgrounds/enabled", tags=["admin"])
+async def admin_set_enabled_templates(request: Request):
+    """Set which template backgrounds are enabled (empty/null = all enabled)."""
+    admin = _require_admin(request)
+    from src.config import set_setting, invalidate_settings_cache
+    from src.logger import log_system_event
+    import json as _json
+    body = await request.json()
+    ids = body.get("enabled_ids", None)
+    # ids should be list of template_ids or None (all)
+    if ids is not None:
+        if not isinstance(ids, list):
+            raise HTTPException(status_code=400, detail="enabled_ids must be a list or null")
+        # Validate ids are strings
+        ids = [str(x).strip() for x in ids if str(x).strip()]
+        admin_id = getattr(admin, "id", None) or getattr(admin, "user_id", None)
+        set_setting("enabled_template_backgrounds", _json.dumps(ids), admin_id=admin_id)
+    else:
+        # Clear the setting = all enabled
+        from src.models import SessionLocal, Setting
+        db = SessionLocal()
+        try:
+            row = db.query(Setting).filter(Setting.key == "enabled_template_backgrounds").first()
+            if row:
+                db.delete(row)
+                db.commit()
+        finally:
+            db.close()
+        invalidate_settings_cache()
+    log_system_event("CONFIG", "Template Backgrounds Updated", f"Enabled: {ids if ids is not None else 'ALL'}", severity="SUCCESS")
+    return {"success": True, "enabled_ids": ids, "message": f"Enabled {len(ids) if ids else 'all'} template backgrounds"}
+
+
 # ── Pipeline Settings (Dynamic Configuration) ────────────────────────────────
 @app.get("/api/admin/pipeline-config", tags=["admin"])
 async def admin_get_pipeline_config(request: Request):
@@ -1844,7 +2178,7 @@ async def admin_save_pipeline_config(request: Request):
         # System prompt
         "pipeline_system_prompt",
         # Scene generation
-        "video_gen_provider", "pollinations_api_key", "agnes_api_key", "comfyui_url",
+        "comfyui_url",
         # Timezone
         "timezone",
     }
@@ -1964,7 +2298,8 @@ async def admin_reset_pipeline_config(request: Request):
 async def admin_delete_config_key(request: Request):
     """Clear a saved API key / secret from the DB (sets it to empty so it reads as not-configured).
 
-    Supports deleting Pollinations / Agnes / cloud provider keys from the Admin UI.
+    Only for keys stored in the settings table. Scene provider keys live in the
+    scene_providers table and are cleared through the scene-provider endpoints.
     """
     admin = _require_admin(request)
     from src.config import set_setting, invalidate_settings_cache
@@ -1975,9 +2310,7 @@ async def admin_delete_config_key(request: Request):
 
     # Only allow known secret/config keys to be deleted (never accept arbitrary keys).
     deletable = {
-        "pollinations_api_key", "agnes_api_key",
         "assemblyai_api_key", "groq_api_key", "videosailor_api_key",
-        "pollinations_api_key_is_set",
     }
     if key not in deletable:
         raise HTTPException(status_code=400, detail=f"Key '{key}' is not deletable through this endpoint.")
@@ -1986,14 +2319,12 @@ async def admin_delete_config_key(request: Request):
     invalidate_settings_cache()
     log_system_event("CONFIG", "API Key Removed", f"Removed saved API key '{key}'", severity="WARNING")
 
-    from src.config import get_all_pipeline_config, get_setting
+    from src.config import get_all_pipeline_config
     cfg = get_all_pipeline_config()
     return {
         "success": True,
         "message": f"API key removed: {key}",
         "config": cfg,
-        "pollinations_api_key": get_setting("pollinations_api_key", ""),
-        "agnes_api_key": get_setting("agnes_api_key", ""),
     }
 
 
@@ -2365,25 +2696,33 @@ async def generate_from_topic(request: Request):
     from src.auth import AUTH_REQUIRED, decode_token, get_user_by_id
     from src.models import SessionLocal
 
-    # Auth check
+    # Auth check — token is parsed REGARDLESS of AUTH_REQUIRED so a logged-in
+    # admin/user is never mistaken for a guest (AUTH_REQUIRED only gates whether
+    # an anonymous request is allowed at all).
     user_id = None
     is_guest = True
-    if AUTH_REQUIRED:
-        token = None
-        auth = request.headers.get("authorization", "")
-        if auth.lower().startswith("bearer "):
-            token = auth.split(" ", 1)[1].strip()
-        else:
-            token = request.query_params.get("token") or request.query_params.get("access_token")
-        if token:
-            try:
-                payload = decode_token(token)
-                uid = payload.get("sub")
-                if uid and get_user_by_id(int(uid)):
-                    user_id = int(uid)
-                    is_guest = False
-            except Exception:
-                pass
+    token = None
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+    else:
+        token = request.query_params.get("token") or request.query_params.get("access_token")
+    if token:
+        try:
+            payload = decode_token(token)
+            uid = payload.get("sub")
+            if uid and get_user_by_id(int(uid)):
+                user_id = int(uid)
+                is_guest = False
+        except HTTPException:
+            # Token presented but expired/invalid: reject with 401 so the
+            # frontend auto-refreshes. NEVER silently fall back to guest —
+            # that makes an admin/paid user burn the device trial and get 403.
+            raise
+        except Exception:
+            pass
+    if AUTH_REQUIRED and is_guest:
+        raise HTTPException(status_code=401, detail="Authentication required")
 
     # Get device ID for guest trial check
     device_id = request.headers.get("x-device-id", "").strip()
@@ -2456,7 +2795,13 @@ async def generate_from_topic(request: Request):
     sys_prompt = (
         "You are a master short-form video scriptwriter for viral 45-60 second YouTube Shorts. "
         "Write clean, punchy scripts with structured sections: HOOK, PROBLEM, 3 SECRETS, TWIST, CTA. "
-        "No emojis. Short sentences under 12 words. Pure spoken English."
+        "No emojis. Short sentences under 12 words. Pure spoken English.\n\n"
+        "CRITICAL — The VOICEOVER is the spoken narration. NEVER paste the topic title into a VOICEOVER line; "
+        "mind read/watch the topic and write a natural spoken opener about it.\n\n"
+        "CRITICAL — Each VISUAL line must describe a REAL CINEMATIC AI VIDEO SCENE (specific camera angle, "
+        "subject, environment, lighting, motion) that matches the section's meaning. It must NEVER be about text, "
+        "animation, zoom-in on text, or on-screen typography. Example: 'Slow dolly shot through a rainlit night "
+        "office, empty desks, a single green dashboard glow, cinematic depth-of-field.'"
     )
     user_template = None
     _db = SessionLocal()
@@ -2470,7 +2815,14 @@ async def generate_from_topic(request: Request):
         _db.close()
 
     if user_template:
-        user_req = user_template.format(topic=topic, niche=niche, tone=tone, duration=duration)
+        # DB templates use {{topic}} (double braces) while Python .format expects {topic}
+        # Handle both so LLM receives actual values not placeholders
+        tmp = user_template.replace("{{topic}}", "{topic}").replace("{{niche}}", "{niche}").replace("{{tone}}", "{tone}").replace("{{duration}}", "{duration}")
+        try:
+            user_req = tmp.format(topic=topic, niche=niche, tone=tone, duration=duration)
+        except Exception:
+            # Fallback direct replace if format fails
+            user_req = user_template.replace("{{topic}}", str(topic)).replace("{{niche}}", str(niche)).replace("{{tone}}", str(tone)).replace("{{duration}}", str(duration))
     else:
         user_req = f"""TOPIC: {topic}
 NICHE: {niche}
@@ -2488,42 +2840,43 @@ Write a complete script following the structured format. Output ONLY the script,
         log_system_event("PIPELINE", "Topic Script Fallback", f"LLM error: {e}, using template", severity="WARN")
 
     if not script_result:
-        # Clean fallback template if LLM key not configured
+        # Clean fallback template if LLM key not configured.
+        # VISUAL lines = real cinematic AI scenes (NEVER text/animation).
         script_result = f"""TITLE: The Hidden Truth About {topic}
 
 HOOK
 TIMESTAMP: 00:00 - 00:04
-VISUAL: Bold white text, rapid zoom-in on dark background
+VISUAL: Slow push-in through a dim studio, a single spotlight on a confident person, cool cyan rim light, cinematic depth of field
 VOICEOVER: Almost nobody knows this about {topic}.
 
 PROBLEM
 TIMESTAMP: 00:04 - 00:12
-VISUAL: Text slides in from left, gradient overlay
+VISUAL: Wide office scene at night, tired employee staring at a glowing screen, shallow focus, moody teal lighting
 VOICEOVER: Most people get this completely wrong. They follow advice that keeps them stuck and confused.
 
 SECRET ONE
 TIMESTAMP: 00:12 - 00:22
-VISUAL: Number "1" animates in, text reveals letter by letter
+VISUAL: Close-up of steady hands organizing a clean workspace, morning light through blinds, calm realistic motion
 VOICEOVER: Rule number one. Stop overcomplicating the basics. Simple actions done daily beat complex strategies done once.
 
 SECRET TWO
 TIMESTAMP: 00:22 - 00:32
-VISUAL: Transition wipe, new color scheme
+VISUAL: Over-the-shoulder shot of a focused creator, laptop glow, efficient flow, shallow depth of field, natural daylight
 VOICEOVER: Rule number two. Focus on high-leverage execution. One good action beats ten mediocre ones every single time.
 
 SECRET THREE
 TIMESTAMP: 00:32 - 00:42
-VISUAL: Bold text center screen, pulse animation
+VISUAL: Calm person in a serene living room, deep breath, plants and warm light, slow cinematic pan
 VOICEOVER: Rule number three. Master your emotional control. The person who stays calm under pressure wins every time.
 
 TWIST
 TIMESTAMP: 00:42 - 00:50
-VISUAL: Text flips upside down, color inverts
+VISUAL: Surprising rooftop reveal at dusk, city lights bokeh, people looking up, glowing horizon, cinematic motion
 VOICEOVER: Once you apply this one shift, everything accelerates. Most people will ignore this. That is exactly why it works.
 
 CTA
 TIMESTAMP: 00:50 - 00:58
-VISUAL: Follow button animation, subscribe bell
+VISUAL: Upbeat street scene, creator smiling toward camera, natural handheld motion, warm golden-hour light
 VOICEOVER: Follow for more daily breakdowns that actually change how you think."""
 
     return {
@@ -2537,27 +2890,17 @@ VOICEOVER: Follow for more daily breakdowns that actually change how you think."
     }
 
 
-# ── Video Provider Test ─────────────────────────────────────────────────────────
+# ── Scene Generation Provider Test ─────────────────────────────────────────────
 @app.post("/api/admin/video-provider/test", tags=["admin"])
 async def admin_test_video_provider(request: Request):
-    """Verify a scene/video generation API key works."""
+    """Verify a scene generation provider (local / fal / replicate) is usable."""
     _require_admin(request)
     from src.logger import log_system_event
+    from src.scene_providers import get_provider_config
 
     body = await request.json()
     provider = body.get("provider", "").strip().lower()
     value = body.get("value", "").strip()
-
-    # Fall back to stored key if not provided
-    from src.config import get_setting
-    if not value:
-        value = get_setting({
-            "pollinations": "pollinations_api_key",
-            "agnes": "agnes_api_key",
-        }.get(provider, ""), "")
-
-    if not value:
-        return {"verified": False, "message": "No API key provided for this provider."}
 
     import urllib.request as _ur
     import urllib.error as _uerr
@@ -2567,85 +2910,92 @@ async def admin_test_video_provider(request: Request):
         with _ur.urlopen(req, timeout=timeout) as r:
             return r.status, r.read()
 
-    try:
-        if provider == "pollinations":
-            # Probe gen.pollinations.ai — 402 means key is valid but needs credits
-            status, _ = _probe(
-                "https://gen.pollinations.ai/video/test?model=wan-fast&duration=1",
-                headers={"Authorization": f"Bearer {value}", "User-Agent": "Vergeclip/1.0"},
-            )
-            if status == 401:
-                msg = "Invalid Pollinations key (401 Unauthorized)"
-                verified = False
-            elif status == 402:
-                msg = "Pollinations key valid but needs credits (402 Payment Required) — video not available on free tier"
-                verified = False
-            else:
-                msg = f"Pollinations reachable (status {status})"
-                verified = True
-            log_system_event("CONFIG", "Pollinations Test", msg, severity="SUCCESS" if verified else "ERROR")
-            return {"verified": verified, "message": msg}
+    # Use the passed key if given, otherwise fall back to the stored config.
+    cfg = get_provider_config(provider)
+    if not value:
+        value = (cfg or {}).get("api_key", "") or ""
 
-        elif provider == "agnes":
-            # Probe Agnes by creating a tiny text task
+    if provider == "local":
+        comfy_url = value or (cfg or {}).get("endpoint") or "http://127.0.0.1:8188"
+        comfy_url = comfy_url.rstrip("/")
+        try:
+            req = _ur.Request(f"{comfy_url}/system_stats", headers={"User-Agent": "Vergeclip/1.0"})
+            with _ur.urlopen(req, timeout=5) as resp:
+                stats = json.loads(resp.read().decode())
+            dev = stats.get("devices", [{}])[0].get("name", "unknown GPU")
+        except Exception as e:
+            log_system_event("CONFIG", "Local Scene Test", f"Not reachable: {e}", severity="ERROR")
+            return {"verified": False, "message": f"Local ComfyUI is NOT running at {comfy_url}. Start it, then re-check. ({e})"}
+
+        # Check the ComfyUI instance exposes Wan2.1 / LTX-Video nodes so local
+        # generation can actually run (this provider replaced the CogVideoX path).
+        wan_models = []
+        try:
+            req = _ur.Request(f"{comfy_url}/object_info", headers={"User-Agent": "Vergeclip/1.0"})
+            with _ur.urlopen(req, timeout=8) as resp:
+                obj = json.loads(resp.read().decode())
+            wan_nodes = [k for k in obj if (
+                k.startswith("Wan") or k.startswith("WanVideo") or k.startswith("LTXV")
+                or ("Wan" in k and "Video" in k) or k.startswith("LTXVideo")
+            )]
+            def _combo(field):
+                if isinstance(field, list) and field and isinstance(field[0], list):
+                    return field[0]
+                return field if isinstance(field, list) else []
+            chk = _combo(obj.get("CheckpointLoaderSimple", {}).get("input", {}).get("required", {}).get("ckpt_name", []))
+            wan_models = [m for m in chk if "wan" in m.lower() or "ltx" in m.lower()]
+        except Exception:
+            wan_nodes = []
+
+        if wan_nodes or wan_models:
+            detail = ", ".join((wan_models[:5] if wan_models else wan_nodes[:5]))
+            msg = (f"Local ComfyUI running on '{dev}' ✓ with Wan/LTX support"
+                   + (f" ({detail})" if detail else "") + " — local generation READY")
+            verified = True
+        else:
+            msg = (f"Local ComfyUI is running on '{dev}' ✓ BUT no Wan2.1/LTX-Video nodes found. "
+                   "Install the Wan/LTX-Video custom nodes and load a Wan/LTX checkpoint in ComfyUI first.")
+            verified = False
+        log_system_event("CONFIG", "Local Scene Test", msg, severity="SUCCESS" if verified else "WARN")
+        return {"verified": verified, "message": msg}
+
+    # Cloud providers require a key.
+    if not value:
+        return {"verified": False, "message": "No API key provided for this provider. Save one in Admin → Scene Generation."}
+
+    try:
+        if provider == "fal":
             import json as _json
+            model = (cfg or {}).get("model_name") or "kuaishou/kling-video/v1/standard/text-to-video"
+            base = (cfg or {}).get("endpoint") or "https://queue.fal.run"
             payload = _json.dumps({
-                "model": "agnes-video-v2.0",
-                "prompt": "a simple test scene",
-                "width": 576,
-                "height": 384,
-                "frame_rate": 10,
+                "prompt": "a short cinematic test scene",
+                "num_frames": 8,
+                "size": "320x576",
+                "num_inference_steps": 2,
             }).encode("utf-8")
             status, body_bytes = _probe(
-                "https://apihub.agnes-ai.com/v1/videos",
-                headers={"Authorization": f"Bearer {value}", "Content-Type": "application/json", "User-Agent": "Vergeclip/1.0"},
-                data=payload,
+                f"{base}/{model.strip('/')}",
+                headers={"Authorization": f"Key {value}", "Content-Type": "application/json", "User-Agent": "Vergeclip/1.0"},
+                data=payload, timeout=30,
             )
-            if status in (200, 201):
-                msg = "Agnes AI key valid — video task created ✓"
-                verified = True
-            elif status == 401 or status == 403:
-                msg = "Invalid Agnes AI key (401/403 Unauthorized)"
-                verified = False
-            else:
-                msg = f"Agnes AI responded with status {status}"
-                verified = False
-            log_system_event("CONFIG", "Agnes AI Test", msg, severity="SUCCESS" if verified else "ERROR")
+            msg = _cloud_status_msg("fal.ai", status)
+            verified = status in (200, 201, 202)
+            log_system_event("CONFIG", "fal.ai Test", msg, severity="SUCCESS" if verified else "ERROR")
             return {"verified": verified, "message": msg}
 
-        elif provider == "local":
-            # Check whether a local ComfyUI server is reachable AND has a CogVideo
-            # model available (so generation can actually run).
-            comfy_url = (value or get_setting("comfyui_url", "http://127.0.0.1:8188")).rstrip("/")
-            try:
-                req = _ur.Request(f"{comfy_url}/system_stats", headers={"User-Agent": "Vergeclip/1.0"})
-                with _ur.urlopen(req, timeout=5) as resp:
-                    stats = json.loads(resp.read().decode())
-                # Pull GPU device info from system_stats
-                dev = stats.get("devices", [{}])[0].get("name", "unknown GPU")
-            except Exception as e:
-                log_system_event("CONFIG", "Local ComfyUI Test", f"Not reachable: {e}", severity="ERROR")
-                return {"verified": False, "message": f"ComfyUI is NOT running at {comfy_url}. Start it, then re-check. ({e})"}
-
-            # Check for a CogVideo model
-            cog_models = []
-            try:
-                req = _ur.Request(f"{comfy_url}/object_info", headers={"User-Agent": "Vergeclip/1.0"})
-                with _ur.urlopen(req, timeout=8) as resp:
-                    obj = json.loads(resp.read().decode())
-                chk = obj.get("CheckpointLoaderSimple", {}).get("input", {}).get("required", {}).get("ckpt_name", {}).get(0, [])
-                cog_models = [m for m in chk if "cogvideo" in m.lower() or "cog" in m.lower()]
-            except Exception:
-                pass
-
-            if cog_models:
-                msg = f"ComfyUI running on '{dev}' ✓ with CogVideo model(s): {', '.join(cog_models)} — local generation READY"
-                verified = True
-            else:
-                msg = (f"ComfyUI is running on '{dev}' ✓ BUT no CogVideo model found. "
-                       "Load a CogVideoX-2B checkpoint in ComfyUI first (see setup script).")
-                verified = False
-            log_system_event("CONFIG", "Local ComfyUI Test", msg, severity="SUCCESS" if verified else "WARN")
+        elif provider == "replicate":
+            import json as _json
+            model = (cfg or {}).get("model_name") or "wan-video/wan-2.1-t2v-14b"
+            base = (cfg or {}).get("endpoint") or "https://api.replicate.com/v1"
+            status, body_bytes = _probe(
+                f"{base.rstrip('/')}/models/{model}",
+                headers={"Authorization": f"Bearer {value}", "User-Agent": "Vergeclip/1.0"},
+                timeout=30,
+            )
+            msg = _cloud_status_msg("Replicate", status)
+            verified = status in (200, 201)
+            log_system_event("CONFIG", "Replicate Test", msg, severity="SUCCESS" if verified else "ERROR")
             return {"verified": verified, "message": msg}
 
         return {"verified": False, "message": f"Unknown provider: {provider}"}
@@ -2655,31 +3005,516 @@ async def admin_test_video_provider(request: Request):
         return {"verified": False, "message": f"Connection error: {e}"}
 
 
+def _cloud_status_msg(name: str, status: int) -> str:
+    """Map an HTTP status from a cloud video API to a human-readable test result."""
+    if status in (401, 403):
+        return f"{name} rejected the key (HTTP {status} Unauthorized/Forbidden). Check the API key."
+    if status == 402:
+        return f"{name} key valid but payment required (HTTP 402). Add a payment method / credits."
+    if status in (404,):
+        return f"{name} returned 404 — check the model name."
+    if status in (200, 201, 202):
+        return f"{name} connection verified (HTTP {status}) ✓"
+    return f"{name} responded with HTTP {status}"
+
+
+# Process handle + log handle for the bundled ComfyUI launch (kept referenced so
+# the background process and its log pipe survive after the request returns).
+_comfyui_popen = None
+_comfyui_log_fh = None
+_comfyui_url = None
+
+
+# ── ComfyUI Auto-Setup ──────────────────────────────────────────────────────────
+# Files we expect to be in place for a working Wan2.1 / LTX-Video installation.
+# (Matches what scripts/setup_comfyui_wan.ps1 + requirements-local.txt set up.)
+# The endpoint below reports which pieces are present and installs the missing
+# ones on demand — so the admin UI can offer a true one-click "Setup + Start"
+# experience for the local Wan2.1 / LTX-Video stack.
+_WAN_REQUIRED = [
+    # (relative_path, friendly_label, min_size_bytes, optional)
+    ("comfyui/main.py", "ComfyUI main.py", 5_000, False),
+    ("comfyui/.venv/Scripts/python.exe", "ComfyUI Python venv", 50_000, False),
+    ("comfyui/.venv/Lib/site-packages/torch/__init__.py", "PyTorch (in venv)", 1_000, False),
+    ("comfyui/custom_nodes/ComfyUI-WanVideoWrapper/__init__.py", "WanVideoWrapper custom node", 200, False),
+    ("comfyui/custom_nodes/ComfyUI-KJNodes/__init__.py", "ComfyUI-KJNodes (required dep)", 200, False),
+    ("comfyui/custom_nodes/ComfyUI-Manager/__init__.py", "ComfyUI-Manager", 200, True),
+    ("comfyui/models/Diffusion_Models/wan2.1_t2v_14B_bf16.safetensors", "Wan2.1-T2V-14B diffusion model (~28 GB)", 20_000_000_000, False),
+    ("comfyui/models/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors", "UMT5-XXL text encoder fp8 (~6.2 GB)", 5_500_000_000, False),
+    ("comfyui/models/vae/wan_2.1_vae.safetensors", "Wan2.1 VAE (~257 MB)", 200_000_000, False),
+]
+
+
+def _wan_status_snapshot() -> dict:
+    """Return a per-component 'present' map + a list of human-friendly lines for the UI."""
+    items = []
+    all_ok = True
+    for rel, label, min_size, optional in _WAN_REQUIRED:
+        p = ROOT_DIR / rel
+        present = bool(p.exists()) and p.stat().st_size >= min_size
+        items.append({
+            "key": rel,
+            "label": label,
+            "present": present,
+            "size_mb": round(p.stat().st_size / 1_048_576, 1) if p.exists() else 0,
+            "optional": optional,
+        })
+        if not present and not optional:
+            all_ok = False
+    return {"all_ready": all_ok, "items": items}
+
+
+@app.get("/api/admin/comfyui/status", tags=["admin"])
+async def admin_comfyui_status(request: Request):
+    """Return detailed install status of the bundled Local Wan2.1 / LTX-Video stack."""
+    _require_admin(request)
+    import urllib.request as _ur
+    from src.config import get_setting
+    comfy_url = (get_setting("comfyui_url", "http://127.0.0.1:8188") or "http://127.0.0.1:8188").strip().rstrip("/")
+    reachable = False
+    try:
+        with _ur.urlopen(f"{comfy_url}/system_stats", timeout=3) as r:
+            r.read()
+        reachable = True
+    except Exception:
+        reachable = False
+    snap = _wan_status_snapshot()
+    return {
+        "success": True,
+        "all_ready": snap["all_ready"],
+        "components": snap["items"],
+        "comfyui_url": comfy_url,
+        "comfyui_reachable": reachable,
+        "comfyui_running": reachable,
+        "ready_to_generate": snap["all_ready"] and reachable,
+        "ready_to_start": snap["all_ready"],
+    }
+
+
+@app.post("/api/admin/comfyui/setup", tags=["admin"])
+async def admin_comfyui_setup(request: Request):
+    """Auto-install the bundled Local Wan2.1 / LTX-Video stack.
+
+    This endpoint is the Python equivalent of scripts/setup_comfyui_wan.ps1.
+    It detects which pieces are missing (ComfyUI repo, venv, PyTorch+CUDA,
+    ComfyUI's own requirements, the WanVideoWrapper + KJNodes custom nodes,
+    and the large model files) and installs/downloads them in-place.
+
+    Pass `{"start_after": true}` in the JSON body to also launch ComfyUI
+    immediately after setup finishes.
+    """
+    _require_admin(request)
+    import subprocess
+    import time as _time
+    import urllib.request as _ur
+    from pathlib import Path
+    from src.config import get_setting
+    from src.logger import log_system_event
+
+    comfy_py = ROOT_DIR / "comfyui" / ".venv" / "Scripts" / "python.exe"
+    comfy_main = ROOT_DIR / "comfyui" / "main.py"
+    wan_node = ROOT_DIR / "comfyui" / "custom_nodes" / "ComfyUI-WanVideoWrapper" / "__init__.py"
+    kj_node = ROOT_DIR / "comfyui" / "custom_nodes" / "ComfyUI-KJNodes" / "__init__.py"
+    diffusion_dir = ROOT_DIR / "comfyui" / "models" / "Diffusion_Models"
+    te_dir = ROOT_DIR / "comfyui" / "models" / "text_encoders"
+    vae_dir = ROOT_DIR / "comfyui" / "models" / "vae"
+
+    log_lines: list[str] = []
+    actions: list[dict] = []
+
+    def _log(msg: str) -> None:
+        log_lines.append(msg)
+        log.info("[comfyui-setup] %s", msg)
+
+    def _action(label: str, ok: bool, detail: str = "") -> None:
+        actions.append({"label": label, "ok": ok, "detail": detail})
+        _log(("OK   " if ok else "FAIL ") + label + ((" — " + detail) if detail else ""))
+
+    def _stream(cmd: list[str], cwd: str | None = None, timeout: int = 1800) -> tuple[bool, str]:
+        """Run subprocess, stream output to log_lines, return (ok, tail)."""
+        try:
+            _log("RUN  " + " ".join(cmd))
+            proc = subprocess.Popen(
+                cmd, cwd=cwd,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace",
+            )
+            buf: list[str] = []
+            t0 = _time.monotonic()
+            while True:
+                if proc.stdout is None:
+                    break
+                line = proc.stdout.readline()
+                if not line and proc.poll() is not None:
+                    break
+                if line:
+                    s = line.rstrip()
+                    buf.append(s)
+                    if len(buf) > 400:
+                        del buf[:200]
+                    if len(log_lines) > 400:
+                        del log_lines[:200]
+                    log_lines.append(s)
+                if _time.monotonic() - t0 > timeout:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    return False, "Timeout after " + str(timeout) + "s. Last: " + (buf[-1] if buf else "(no output)")
+            rc = proc.wait(timeout=10)
+            return rc == 0, "\n".join(buf[-30:])
+        except Exception as e:
+            return False, f"Exception: {e}"
+
+    # ── 1. Clone ComfyUI itself if main.py is missing ─────────────────────────
+    if not comfy_main.exists():
+        _log("ComfyUI main.py missing — cloning repository")
+        ok, tail = _stream(
+            ["git", "clone", "--depth=1", "https://github.com/comfyanonymous/ComfyUI.git", "comfyui"],
+            cwd=str(ROOT_DIR), timeout=900,
+        )
+        _action("Clone ComfyUI repository", ok, tail[-200:] if not ok else "")
+        if not ok:
+            return {"success": False, "message": "Failed to clone ComfyUI. See log_tail for git output.",
+                    "actions": actions, "log_tail": "\n".join(log_lines[-40:])}
+
+    # ── 2. Create venv if missing ─────────────────────────────────────────────
+    if not comfy_py.exists():
+        _log("ComfyUI venv missing — locating a Python 3.10–3.12 interpreter")
+        py_exe = None
+        for cand in ["python", "py", "python3"]:
+            try:
+                r = subprocess.run([cand, "-c", "import sys; print(sys.version_info.minor)"],
+                                   capture_output=True, text=True, timeout=5)
+                minor = (r.stdout or "").strip()
+                if minor.isdigit() and int(minor) in (10, 11, 12):
+                    py_exe = cand
+                    _log(f"Found Python 3.{minor} as '{cand}'")
+                    break
+            except Exception:
+                continue
+        if not py_exe:
+            for cand in [r"C:\Python312\python.exe", r"C:\Python311\python.exe", r"C:\Python310\python.exe"]:
+                if Path(cand).exists():
+                    py_exe = cand
+                    _log(f"Found Python at {cand}")
+                    break
+        if not py_exe:
+            return {
+                "success": False,
+                "message": "Could not find Python 3.10/3.11/3.12 on PATH. Install Python from https://www.python.org/downloads/ and tick 'Add to PATH', then try again.",
+                "actions": actions, "log_tail": "\n".join(log_lines[-40:]),
+            }
+        ok, tail = _stream([py_exe, "-m", "venv", "comfyui/.venv"], cwd=str(ROOT_DIR), timeout=300)
+        _action("Create ComfyUI venv (Python 3.10–3.12)", ok, tail[-200:] if not ok else "")
+        if not ok:
+            return {"success": False, "message": "Failed to create venv", "actions": actions, "log_tail": "\n".join(log_lines[-40:])}
+
+    # ── 3. Install PyTorch CUDA 12.6 if torch is missing from venv ─────────────
+    torch_init = ROOT_DIR / "comfyui" / ".venv" / "Lib" / "site-packages" / "torch" / "__init__.py"
+    if not torch_init.exists():
+        _log("PyTorch missing in venv — installing torch+torchvision+torchaudio (CUDA 12.6)")
+        ok, tail = _stream([str(comfy_py), "-m", "pip", "install", "--upgrade", "pip"],
+                           cwd=str(ROOT_DIR / "comfyui"), timeout=300)
+        _action("Upgrade pip in venv", ok, tail[-200:] if not ok else "")
+        ok, tail = _stream([
+            str(comfy_py), "-m", "pip", "install",
+            "torch", "torchvision", "torchaudio",
+            "--index-url", "https://download.pytorch.org/whl/cu126",
+        ], cwd=str(ROOT_DIR / "comfyui"), timeout=1800)
+        _action("Install PyTorch (CUDA 12.6)", ok, tail[-200:] if not ok else "")
+        if not ok:
+            return {"success": False, "message": "Failed to install PyTorch", "actions": actions, "log_tail": "\n".join(log_lines[-40:])}
+    else:
+        _log("PyTorch already present in venv — skipping")
+
+    # ── 4. Install ComfyUI's own requirements.txt ─────────────────────────────
+    req = ROOT_DIR / "comfyui" / "requirements.txt"
+    if req.exists():
+        _log("Installing ComfyUI requirements.txt")
+        ok, tail = _stream([str(comfy_py), "-m", "pip", "install", "-r", str(req)],
+                           cwd=str(ROOT_DIR / "comfyui"), timeout=1800)
+        _action("Install ComfyUI requirements.txt", ok, tail[-200:] if not ok else "")
+
+    # ── 5. Install WanVideoWrapper + KJNodes if missing ───────────────────────
+    if not wan_node.exists():
+        _log("ComfyUI-WanVideoWrapper not found — cloning kijai/ComfyUI-WanVideoWrapper")
+        ok, tail = _stream(["git", "clone", "https://github.com/kijai/ComfyUI-WanVideoWrapper.git"],
+                           cwd=str(ROOT_DIR / "comfyui" / "custom_nodes"), timeout=600)
+        _action("Clone ComfyUI-WanVideoWrapper", ok, tail[-200:] if not ok else "")
+        if ok:
+            req2 = ROOT_DIR / "comfyui" / "custom_nodes" / "ComfyUI-WanVideoWrapper" / "requirements.txt"
+            if req2.exists():
+                _log("Installing WanVideoWrapper requirements")
+                ok2, tail2 = _stream([str(comfy_py), "-m", "pip", "install", "-r", str(req2)],
+                                     cwd=str(ROOT_DIR / "comfyui"), timeout=1800)
+                _action("Install WanVideoWrapper requirements", ok2, tail2[-200:] if not ok2 else "")
+    else:
+        _log("ComfyUI-WanVideoWrapper already present — skipping clone")
+
+    if not kj_node.exists():
+        _log("ComfyUI-KJNodes not found — cloning kijai/ComfyUI-KJNodes (required dependency)")
+        ok, tail = _stream(["git", "clone", "https://github.com/kijai/ComfyUI-KJNodes.git"],
+                           cwd=str(ROOT_DIR / "comfyui" / "custom_nodes"), timeout=600)
+        _action("Clone ComfyUI-KJNodes", ok, tail[-200:] if not ok else "")
+        if ok:
+            req3 = ROOT_DIR / "comfyui" / "custom_nodes" / "ComfyUI-KJNodes" / "requirements.txt"
+            if req3.exists():
+                _log("Installing ComfyUI-KJNodes requirements")
+                ok3, tail3 = _stream([str(comfy_py), "-m", "pip", "install", "-r", str(req3)],
+                                     cwd=str(ROOT_DIR / "comfyui"), timeout=1800)
+                _action("Install ComfyUI-KJNodes requirements", ok3, tail3[-200:] if not ok3 else "")
+    else:
+        _log("ComfyUI-KJNodes already present — skipping clone")
+
+    # Make sure diffusers/transformers are recent enough for the wrapper
+    ok, tail = _stream(
+        [str(comfy_py), "-m", "pip", "install", "--upgrade", "diffusers", "transformers", "accelerate", "huggingface_hub"],
+        cwd=str(ROOT_DIR / "comfyui"), timeout=900,
+    )
+    _action("Upgrade diffusers/transformers/accelerate", ok, tail[-200:] if not ok else "")
+
+    # ── 6. Download model files if missing ────────────────────────────────────
+    # Wan2.1 repackaged for ComfyUI (Comfy-Org). LTX-Video can be used instead by
+    # pointing the endpoint/model names to an LTX checkpoint — the node detection
+    # in the local provider accepts both Wan and LTX node families.
+    HF_BASE = "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files"
+
+    def _download(url: str, dest: Path, label: str) -> tuple[bool, str]:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists() and dest.stat().st_size > 50_000_000:
+            return True, f"Already present ({dest.stat().st_size/1_048_576:.1f} MB) — skipping"
+        _log(f"Downloading {label} from {url}")
+        try:
+            tmp = dest.with_suffix(dest.suffix + ".part")
+            downloaded = 0
+            req = _ur.Request(url, headers={"User-Agent": "Vergeclip/1.0"})
+            with _ur.urlopen(req, timeout=600) as r:
+                total = int(r.headers.get("Content-Length", 0))
+                with open(tmp, "wb") as fh:
+                    while True:
+                        chunk = r.read(1024 * 256)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                        downloaded += len(chunk)
+                        if total and downloaded % (50 * 1024 * 1024) < 1024 * 256:
+                            _log(f"  … {label}: {downloaded/1_048_576:.0f}/{total/1_048_576:.0f} MB")
+            tmp.replace(dest)
+            sz = dest.stat().st_size / 1_048_576
+            return True, f"Downloaded {sz:.1f} MB"
+        except Exception as e:
+            return False, f"Download failed: {e}"
+
+    ok, detail = _download(
+        f"{HF_BASE}/diffusion_models/wan2.1_t2v_14B_bf16.safetensors",
+        diffusion_dir / "wan2.1_t2v_14B_bf16.safetensors",
+        "Wan2.1-T2V-14B diffusion model",
+    )
+    _action("Download Wan2.1-T2V-14B diffusion model (~28 GB)", ok, detail)
+
+    # Sidecar config files (non-fatal — wrapper can load without them)
+    for rel in [
+        "diffusion_models/config.json",
+        "text_encoders/config.json",
+        "vae/config.json",
+    ]:
+        name = Path(rel).name
+        ok, detail = _download(f"{HF_BASE}/{rel}", (diffusion_dir if "diffusion" in rel else te_dir if "text" in rel else vae_dir) / name, f"Wan2.1 {name}")
+        if not ok and "Already present" not in detail:
+            _log(f"  (non-fatal) {rel}: {detail}")
+
+    ok, detail = _download(
+        f"{HF_BASE}/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+        te_dir / "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+        "UMT5-XXL text encoder fp8",
+    )
+    _action("Download UMT5-XXL text encoder fp8 (~6.2 GB)", ok, detail)
+
+    ok, detail = _download(
+        f"{HF_BASE}/vae/wan_2.1_vae.safetensors",
+        vae_dir / "wan_2.1_vae.safetensors",
+        "Wan2.1 VAE",
+    )
+    _action("Download Wan2.1 VAE (~257 MB)", ok, detail)
+
+    # ── 7. Final status snapshot ──────────────────────────────────────────────
+    snap = _wan_status_snapshot()
+    log_system_event(
+        "CONFIG", "Local ComfyUI Auto-Setup",
+        "Wan2.1 / LTX-Video auto-setup finished. Ready=" + str(snap["all_ready"]),
+        severity="SUCCESS" if snap["all_ready"] else "WARNING",
+    )
+
+    result = {
+        "success": snap["all_ready"],
+        "all_ready": snap["all_ready"],
+        "components": snap["items"],
+        "actions": actions,
+        "log_tail": "\n".join(log_lines[-60:]),
+    }
+
+    # ── 8. Optional: start ComfyUI afterwards ─────────────────────────────────
+    body: dict = {}
+    try:
+        if request.headers.get("content-type", "").startswith("application/json"):
+            body = await request.json()
+    except Exception:
+        body = {}
+    if body.get("start_after") and snap["all_ready"]:
+        _log("Auto-starting ComfyUI after setup (start_after=true)")
+        start_result = await admin_comfyui_start(request)
+        result["start_result"] = start_result
+        result["message"] = "Setup complete + " + start_result.get("message", "")
+    else:
+        if snap["all_ready"]:
+            result["message"] = "All Wan2.1 / LTX-Video components are installed. Click 'Start & Check' to launch ComfyUI."
+        else:
+            missing = [it["label"] for it in snap["items"] if not it["present"] and not it["optional"]]
+            result["message"] = "Setup partially complete. Still missing: " + ", ".join(missing) + ". See log_tail."
+
+    return result
+
+
+@app.post("/api/admin/comfyui/start", tags=["admin"])
+async def admin_comfyui_start(request: Request):
+    """Launch the bundled Local Wan2.1 / LTX-Video (ComfyUI) server as a background process.
+
+    Output is streamed to data/comfyui.log. The endpoint probes until the UI is
+    reachable (up to 90s) so the admin gets immediate feedback instead of a
+    silent failure.
+    """
+    global _comfyui_popen, _comfyui_log_fh, _comfyui_url
+    _require_admin(request)
+    import subprocess
+    from src.config import get_setting
+    from src.logger import log_system_event
+
+    comfy_url = (get_setting("comfyui_url", "http://127.0.0.1:8188") or "http://127.0.0.1:8188").strip().rstrip("/")
+
+    # Already running?
+    import urllib.request as _ur
+    try:
+        req = _ur.Request(f"{comfy_url}/system_stats", headers={"User-Agent": "Vergeclip/1.0"})
+        with _ur.urlopen(req, timeout=5) as resp:
+            resp.read()
+        msg = f"Local ComfyUI is already running at {comfy_url}."
+        log_system_event("CONFIG", "Local ComfyUI Start", msg, severity="SUCCESS")
+        return {"success": True, "already_running": True, "running": True, "message": msg}
+    except Exception:
+        pass
+
+    comfy_main = ROOT_DIR / "comfyui" / "main.py"
+    comfy_py = ROOT_DIR / "comfyui" / ".venv" / "Scripts" / "python.exe"
+    if not comfy_main.exists():
+        raise HTTPException(status_code=400, detail="Bundled ComfyUI not found (comfyui/main.py missing).")
+    if not comfy_py.exists():
+        raise HTTPException(status_code=400, detail="Bundled ComfyUI venv python not found (comfyui/.venv). Install dependencies first.")
+
+    log_path = ROOT_DIR / "data" / "comfyui.log"
+    if _comfyui_popen is not None and _comfyui_popen.poll() is None:
+        msg = f"ComfyUI is still starting (pid {_comfyui_popen.pid}) — log at data/comfyui.log."
+        return {"success": True, "already_running": False, "running": False, "starting": True, "message": msg}
+    if _comfyui_popen is not None:
+        # Process already exited — read the tail to explain why
+        tail = ""
+        try:
+            if log_path.exists():
+                tail = "\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-15:])
+        except Exception:
+            pass
+        return {"success": True, "already_running": False, "running": False, "log_tail": tail,
+                "message": "Previous ComfyUI process already exited — see log tail below."}
+
+    try:
+        if _comfyui_log_fh is not None:
+            try:
+                _comfyui_log_fh.close()
+            except Exception:
+                pass
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        _comfyui_log_fh = open(log_path, "w", encoding="utf-8")
+        _comfyui_url = comfy_url
+        _comfyui_popen = subprocess.Popen(
+            [str(comfy_py), "main.py", "--port", "8188", "--disable-auto-launch"],
+            cwd=str(ROOT_DIR / "comfyui"),
+            stdout=_comfyui_log_fh,
+            stderr=subprocess.STDOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+        )
+    except Exception as e:
+        if _comfyui_log_fh is not None:
+            try:
+                _comfyui_log_fh.close()
+            except Exception:
+                pass
+            _comfyui_log_fh = None
+        raise HTTPException(status_code=500, detail=f"Failed to start ComfyUI: {e}")
+
+    # Probe until reachable (up to 90s) for immediate feedback
+    up = False
+    for _ in range(90):
+        time.sleep(1)
+        try:
+            req = _ur.Request(f"{comfy_url}/system_stats", headers={"User-Agent": "Vergeclip/1.0"})
+            with _ur.urlopen(req, timeout=3) as resp:
+                resp.read()
+                up = True
+                break
+        except Exception:
+            continue
+
+    if up:
+        msg = f"Local ComfyUI is UP at {comfy_url} (pid {_comfyui_popen.pid}). Models/checkpoints still load in the background — start a job now and wait."
+        log_system_event("CONFIG", "Local ComfyUI Start", msg, severity="SUCCESS")
+        return {"success": True, "already_running": False, "running": True, "message": msg}
+    else:
+        tail = ""
+        try:
+            if log_path.exists():
+                tail = "\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-20:])
+        except Exception:
+            pass
+        log_system_event("CONFIG", "Local ComfyUI Start",
+                         f"ComfyUI did not become reachable at {comfy_url} within 90s.", severity="WARNING")
+        return {"success": True, "already_running": False, "running": False,
+                "message": f"ComfyUI not reachable at {comfy_url} within 90s (it may still be launching, or it exited early). Full log saved to data/comfyui.log.",
+                "log_tail": tail}
+
+
 # ── Script-to-Video Pipeline ────────────────────────────────────────────────────
 @app.post("/api/pipeline/script-to-video", tags=["pipeline"])
 async def script_to_video(request: Request):
     from src.auth import AUTH_REQUIRED, decode_token, get_user_by_id
     from src.models import SessionLocal
 
-    # Auth check
+    # Auth check — token is parsed REGARDLESS of AUTH_REQUIRED so a logged-in
+    # admin/user is never mistaken for a guest (AUTH_REQUIRED only gates whether
+    # an anonymous request is allowed at all).
     user_id = None
     is_guest = True
-    if AUTH_REQUIRED:
-        token = None
-        auth = request.headers.get("authorization", "")
-        if auth.lower().startswith("bearer "):
-            token = auth.split(" ", 1)[1].strip()
-        else:
-            token = request.query_params.get("token") or request.query_params.get("access_token")
-        if token:
-            try:
-                payload = decode_token(token)
-                uid = payload.get("sub")
-                if uid and get_user_by_id(int(uid)):
-                    user_id = int(uid)
-                    is_guest = False
-            except Exception:
-                pass
+    token = None
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+    else:
+        token = request.query_params.get("token") or request.query_params.get("access_token")
+    if token:
+        try:
+            payload = decode_token(token)
+            uid = payload.get("sub")
+            if uid and get_user_by_id(int(uid)):
+                user_id = int(uid)
+                is_guest = False
+        except HTTPException:
+            # Token presented but expired/invalid: reject with 401 so the
+            # frontend auto-refreshes. NEVER silently fall back to guest —
+            # that makes an admin/paid user burn the device trial and get 403.
+            raise
+        except Exception:
+            pass
+    if AUTH_REQUIRED and is_guest:
+        raise HTTPException(status_code=401, detail="Authentication required")
 
     # Get device ID for guest trial check
     device_id = request.headers.get("x-device-id", "").strip()
@@ -2737,8 +3572,11 @@ async def script_to_video(request: Request):
 
     body = await request.json()
     script_text = str(body.get("script") or "").strip()
-    voice = str(body.get("voice") or "en-US-GuyNeural").strip()
-    rate = str(body.get("rate") or "+0%").strip()
+    voice = str(body.get("voice") or "en-US-AriaNeural").strip()
+    if not voice or voice not in {"", "auto"}:
+        # Use the raw chosen voice directly; 'auto'/blank -> best default male/female mix.
+        pass
+    rate = str(body.get("rate") or "+3%").strip()
 
     if not script_text:
         raise HTTPException(status_code=400, detail="Script text is required.")
@@ -2827,12 +3665,44 @@ async def script_to_video(request: Request):
     # ── Collect visual descriptions + title metadata (never rendered as text) ──
     visual_descriptions = []
     title_metadata = ""
-    for sec in sections:
-        visual_descriptions.append(sec.get("visual", ""))
+    missing_visual_idx = []
+    for i, sec in enumerate(sections):
+        vis = (sec.get("visual", "") or "").strip()
+        visual_descriptions.append(vis)
+        if not vis:
+            missing_visual_idx.append(i)
         if sec.get("title") and not title_metadata:
             title_metadata = sec["title"]
 
-    log.info("Script-to-Video: visuals=%d, title_meta='%s'", len(visual_descriptions), title_metadata[:40])
+    # Auto-generate scene video prompts from voiceover when the script has no
+    # VISUAL: lines (users who removed image-matter still get real AI videos).
+    if missing_visual_idx:
+        try:
+            from app.semantic_ranker import _call_llm
+            _vis_sys = (
+                "You are a cinematic video-scene director. For each numbered voiceover line, write ONE "
+                "concise AI-VIDEO prompt describing an animated moving scene: subject, action, camera "
+                "movement, lighting, mood. One paragraph, under 40 words, plain text, numbers preserved, "
+                "no JSON, no extra commentary. The video clip will have its own motion."
+            )
+            _vis_lines = "\n".join(f"{k+1}. {sections[idx].get('voiceover','')}" for k, idx in enumerate(missing_visual_idx))
+            _vis_raw = _call_llm(prompt=_vis_lines, system_prompt=_vis_sys, max_tokens=1500)
+            _vis_auto = [_re.sub(r"^\d+\.\s*", "", ln.strip()) for ln in _vis_raw.splitlines() if ln.strip()]
+            if len(_vis_auto) >= len(missing_visual_idx):
+                for k, idx in enumerate(missing_visual_idx):
+                    visual_descriptions[idx] = _vis_auto[k][:500]
+        except Exception as _e:
+            log.warning("Script-to-Video: auto visual prompt generation failed (%s) — using voiceover-derived prompts", _e)
+
+        # Deterministic fallback so video generation NEVER depends on VISUAL: lines existing
+        for i in missing_visual_idx:
+            if visual_descriptions[i]:
+                continue
+            label = sections[i].get("label", f"Scene {i+1}")
+            vo = (sections[i].get("voiceover", "") or "").strip()
+            visual_descriptions[i] = ((f"{label} scene: {vo}" if vo else f"{label} cinematic scene") or "cinematic scene")[:500]
+
+    log.info("Script-to-Video: visuals=%d (auto-filled %d), title_meta='%s'", len(visual_descriptions), len(missing_visual_idx), title_metadata[:40])
 
     # ── Run TTS + scene generation (video) in parallel ──
     from src.tts_engine import async_synthesize_speech
@@ -2841,11 +3711,24 @@ async def script_to_video(request: Request):
 
     job_id = hashlib.md5(uuid.uuid4().bytes).hexdigest()[:8]
 
-    # Check if any video generation API key is configured
-    from src.config import get_setting
-    import uuid, hashlib, threading
-
-    job_id = hashlib.md5(uuid.uuid4().bytes).hexdigest()[:8]
+    # Light deterministic English cleanup so edge-tts / captions never read
+    # structured markers or stutter separate from the LLM-written script.
+    import re as _re
+    def _clean_vo(_t: str) -> str:
+        _t = _re.sub(r"\b(?:VISUAL|VOICEOVER|HOOK|PROBLEM|TWIST|CTA|SECRET|INSIGHT|TITLE)\s*:\s*", "", _t or "", flags=_re.I)
+        _t = _re.sub(r"\s+", " ", _t).strip()
+        _t = _re.sub(r"([.!?])\1+", r"\1", _t)
+        _t = _re.sub(r"(?<=[.!?]\s)([a-z])", lambda _m: _m.group(1).upper(), _t)
+        if _t and _t[0].islower():
+            _t = _t[0].upper() + _t[1:]
+        return _t
+    # Keep captions in sync with what edge-tts actually speaks.
+    for _sec in sections:
+        _sec["voiceover"] = _clean_vo(_sec.get("voiceover", ""))
+    _raw_vo = voiceover_text or ""
+    voiceover_text = _clean_vo(_raw_vo)
+    if _raw_vo != voiceover_text:
+        log.info("Script-to-Video: normalized English text (%d -> %d chars)", len(_raw_vo), len(voiceover_text))
 
     # Register Script-to-Video job in DB so it appears in the Job Queue
     try:
@@ -2872,25 +3755,38 @@ async def script_to_video(request: Request):
     except Exception:
         log.warning("Could not register script-to-video job %s in DB", job_id)
 
-    pollinations_key = get_setting("pollinations_api_key", "")
-    agnes_key = get_setting("agnes_api_key", "")
+    # Helper to mark this script-to-video job as failed (any unhandled exception)
+    def _mark_job_failed(err: str, pct: int = 0):
+        try:
+            from src.models import Job as _J2, SessionLocal as _JSL2
+            _jdb2 = _JSL2()
+            try:
+                _j2 = _jdb2.query(_J2).filter(_J2.id == job_id).first()
+                if _j2:
+                    _j2.status = "failed"
+                    _j2.progress_percent = pct
+                    _j2.error_message = err[:2000]
+                    _jdb2.commit()
+            except Exception:
+                _jdb2.rollback()
+            finally:
+                _jdb2.close()
+        except Exception:
+            pass
 
-    # Local ComfyUI is always a candidate (offline), so video generation is always
-    # attempted; the chain falls back to PIL generative art if nothing succeeds.
-    has_any_key = True
+    # Scene Generation uses the ACTIVE provider from the scene_providers table.
+    from src.scene_providers import get_active_provider
+    active_prov = get_active_provider()
 
-    if has_any_key:
-        providers_available = []
-        if pollinations_key: providers_available.append("Pollinations.ai")
-        if agnes_key: providers_available.append("Agnes AI")
-        providers_available.append("Local ComfyUI (GPU)")
-        log.info("Script-to-Video: video providers: %s — strict mode: every scene must produce a real AI video", ", ".join(providers_available))
+    if not active_prov:
+        log.warning("Script-to-Video: no active provider — will use image/template defaults for all scenes")
+        providers_available = ["none (image/template fallback)"]
+    elif active_prov["provider_key"] in ("fal", "replicate") and not active_prov.get("api_key"):
+        log.warning("Script-to-Video: active provider '%s' has no API key — scenes will fallback to image/template", active_prov["provider_key"])
+        providers_available = [f"{active_prov['name']} (no key → fallback)"]
     else:
-        log.error("Script-to-Video: no video API keys configured — cannot proceed (image/decorative fallback disabled)")
-        raise HTTPException(
-            status_code=400,
-            detail="No video generation API configured. Add Agnes AI / Pollinations key, or start local ComfyUI, in Admin → Scene Generation. Image/decorative fallback is disabled by design.",
-        )
+        providers_available = [active_prov["name"]]
+    log.info("Script-to-Video: active video provider: %s — only this provider will be tried; failure → image/template fallback", ", ".join(providers_available))
 
     scene_videos: list = []
     gen_error: list = []
@@ -2898,16 +3794,22 @@ async def script_to_video(request: Request):
     from src.config import get_video_spec_config as _vs
     _vspec = _vs()
 
-    # Generate AI video clips — video_generator auto-selects from available keys
+    # Generate AI video clips — video_generator uses only the active provider
     from src.video_generator import generate_video_clips_batch
+
+    # Each scene clip should roughly fill its voiceover segment (~14 chars/sec
+    # speech rate), capped 4-10s so short scripts don't produce over-long clips.
+    _n_scenes = max(1, len(visual_descriptions))
+    scene_duration = max(4, min(10, int(round(len(voiceover_text) / (14.0 * _n_scenes)))))
 
     def _gen_videos():
         try:
             scene_videos.extend(generate_video_clips_batch(
                 visual_descriptions,
-                duration=5,
+                duration=scene_duration,
                 width=int(_vspec["target_width"]),
                 height=int(_vspec["target_height"]),
+                progress_cb=lambda msg, pct: log.info("Scene gen: %s", msg),
             ))
         except Exception as e:
             log.error("Video generation error: %s", e)
@@ -2921,35 +3823,29 @@ async def script_to_video(request: Request):
         tts_result = await async_synthesize_speech(voiceover_text, voice=voice, rate=rate)
     except Exception as e:
         log.error("TTS failed: %s", e)
+        _mark_job_failed(f"TTS failed: {e}", pct=10)
         raise HTTPException(status_code=500, detail=f"TTS generation failed: {e}")
 
-    # Wait for video generation to finish
-    log.info("Script-to-Video: waiting for scene videos (max 10 min)...")
-    for _wait in range(1200):
-        if not gen_thread.is_alive():
-            break
-        import asyncio as _aio
-        await _aio.sleep(0.5)
+    # Wait for video generation to finish WITHOUT blocking the event loop.
+    log.info("Script-to-Video: waiting for scene videos (max 20 min)...")
+    import asyncio as _aio
+    await _aio.to_thread(gen_thread.join, 1200)
+    if gen_thread.is_alive():
+        log.warning("Script-to-Video: scene generation still running after 20 min — continuing with partial results")
 
     if gen_error:
         log.error("Video generation thread raised: %s", gen_error)
 
     vid_ok = sum(1 for s in scene_videos if s is not None)
-    log.info("Script-to-Video: %d/%d real AI scene videos generated", vid_ok, len(visual_descriptions))
+    log.info("Script-to-Video: %d/%d real AI scene videos generated (remaining will use image/template fallback)", vid_ok, len(visual_descriptions))
 
-    if vid_ok == 0:
-        raise HTTPException(
-            status_code=500,
-            detail="No AI video clips were generated. Check that Agnes AI / Pollinations / local ComfyUI is configured and reachable. Image/decorative fallback is disabled.",
-        )
-
+    # Never fail the whole short because one scene missed — reuse the previous
+    # generated clip as a placeholder so the user always gets a video.
     if vid_ok < len(visual_descriptions):
         missing = len(visual_descriptions) - vid_ok
-        log.error("Script-to-Video: %d/%d scenes FAILED to generate a video clip — cannot proceed without real AI video", vid_ok, len(visual_descriptions))
-        raise HTTPException(
-            status_code=500,
-            detail=f"AI video generation failed for {missing} scene(s). All scenes must produce a real video clip. Check provider keys + local ComfyUI. Image fallback disabled.",
-        )
+        log.warning("Script-to-Video: %d scene(s) missing — filling with existing clip(s)", missing)
+        _first_hit = next((v for v in scene_videos if v is not None), None)
+        scene_videos = [v if v is not None else _first_hit for v in scene_videos]
 
     # ── Map TTS segments back to sections ──
     segments = tts_result.segments
@@ -2999,6 +3895,7 @@ async def script_to_video(request: Request):
         )
     except Exception as e:
         log.error("Script video render failed: %s", e)
+        _mark_job_failed(f"Video rendering failed: {e}", pct=80)
         raise HTTPException(status_code=500, detail=f"Video rendering failed: {e}")
 
     # 5. Save to GeneratedClip DB (gallery)
@@ -3020,6 +3917,24 @@ async def script_to_video(request: Request):
     except Exception as clip_exc:
         log.warning("Failed to save GeneratedClip record: %s", clip_exc)
 
+    # Mark script-to-video job as completed in the queue so it doesn't stay
+    # stuck on "processing" forever.
+    try:
+        from src.models import Job as _Job, SessionLocal as _JSL
+        _jdb = _JSL()
+        try:
+            _jrow = _jdb.query(_Job).filter(_Job.id == job_id).first()
+            if _jrow:
+                _jrow.status = "completed"
+                _jrow.progress_percent = 100
+                _jdb.commit()
+        except Exception:
+            _jdb.rollback()
+        finally:
+            _jdb.close()
+    except Exception:
+        pass
+
     log.info("Script-to-Video: done — %s (%.1fs)", out_name, tts_result.duration_secs)
 
     # Get file size and video dimensions
@@ -3029,10 +3944,10 @@ async def script_to_video(request: Request):
         size_bytes = 0
 
     try:
+        from src.config import FFMPEG_BIN as _ffprobe_bin
         import subprocess as _sp
         probe = _sp.run(
-            [str(Path(r"C:\Users\GUC\AppData\Local\Programs\Python\Python313\Lib\site-packages\imageio_ffmpeg\binaries\ffmpeg-win-x86_64-v7.1.exe")),
-             "-i", str(video_path), "-f", "null", "-"],
+            [_ffprobe_bin, "-i", str(video_path), "-f", "null", "-"],
             capture_output=True, text=True, timeout=10
         )
         # Parse from stderr
@@ -3493,7 +4408,23 @@ async def delete_output(payload: Request):
 
     try:
         if target.exists():
-            target.unlink()
+            import time as _time
+            from src.ffmpeg_utils import purge_stale_ffmpeg
+
+            # Zombie ffmpeg from a crashed render keeps output files locked on
+            # Windows (WinError 32). Kill any stale ones, then retry a few times.
+            purge_stale_ffmpeg()
+            _last_err = None
+            for _attempt in range(5):
+                try:
+                    target.unlink()
+                    _last_err = None
+                    break
+                except (PermissionError, OSError) as _exc:
+                    _last_err = _exc
+                    _time.sleep(0.4)
+            if _last_err is not None:
+                raise _last_err
         log.info("Deleted %s (user_id=%s)", filename, user_id)
         return {"success": True, "message": f"Deleted {filename}"}
     except Exception as exc:
@@ -3859,6 +4790,11 @@ def _run_full_pipeline_task(job_id: str, url: str, filename: str, num_shorts: Op
                             pass
             for old_out in OUTPUT_DIR.glob("*.mp4"):
                 if old_out.is_file():
+                    # NEVER delete script-to-video / test outputs — the user may
+                    # still be saving them. Only YouTube-shorts outputs (short_*)
+                    # removed so they can fully reproduce the app.
+                    if old_out.name.startswith(("script_", "test_", "ai_")):
+                        continue
                     try:
                         old_out.unlink(missing_ok=True)
                     except Exception:
@@ -4032,7 +4968,16 @@ def _run_full_pipeline_task(job_id: str, url: str, filename: str, num_shorts: Op
 
         log_pipeline_msg(f"🎥 [5/5] Reframing 9:16 AI Face Tracking & burning captions for {num_to_render} short(s)...")
 
+        try:
+            from src.ffmpeg_utils import purge_stale_ffmpeg
+            _killed = purge_stale_ffmpeg()
+            if _killed:
+                log_pipeline_msg(f"🧹 Killed {_killed} stale ffmpeg process(es) from previous renders.")
+        except Exception as _purge_exc:
+            log.warning("purge_stale_ffmpeg failed: %s", _purge_exc)
+
         rendered_files = []
+        render_failures = 0
         from src.renderer import render_clip
 
         for idx in range(1, num_to_render + 1):
@@ -4074,6 +5019,7 @@ def _run_full_pipeline_task(job_id: str, url: str, filename: str, num_shorts: Op
                     except Exception as clip_exc:
                         log.warning("Failed to save clip record: %s", clip_exc)
             except Exception as rend_exc:
+                render_failures += 1
                 log_pipeline_msg(f"  ✗ Failed rendering #{idx}: {rend_exc}")
                 log.error("Render failed #%d: %s", idx, rend_exc)
             finally:
@@ -4083,6 +5029,9 @@ def _run_full_pipeline_task(job_id: str, url: str, filename: str, num_shorts: Op
             with pipeline_lock:
                 pipeline_state["progress"] = min(99, progress_pct)
             _sync_db_progress(min(99, progress_pct))
+
+        if render_failures == num_to_render and len(rendered_files) == 0:
+            raise RuntimeError(f"All {num_to_render} render(s) failed — check ComfyUI / GPU / model availability (see admin → video-provider test).")
 
         if _is_cancelled():
             log_pipeline_msg(f"⚪ Pipeline cancelled. {len(rendered_files)} partial shorts saved.")
@@ -4151,6 +5100,10 @@ async def serve_index():
 # Simpler: mount StaticFiles at "/" with html=True, but it will handle /api/* after? FastAPI matches in order added,
 # so add after all API routes.
 
+try:
+    app.mount("/assets/templates", StaticFiles(directory=str(ROOT_DIR / "assets" / "templates")), name="assets-templates")
+except Exception:
+    pass
 try:
     app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIR)), name="assets-frontend")
 except Exception:

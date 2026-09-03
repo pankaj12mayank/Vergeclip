@@ -1,0 +1,15 @@
+{
+  "template_id": "particles_glow",
+  "name": "Particles Glow",
+  "description": "Ethereal glowing particles on deep dark background",
+  "loop_duration": 10.0,
+  "caption_safe_zone": {
+    "y_min_pct": 0.6,
+    "y_max_pct": 0.9
+  },
+  "suggested_colors": {
+    "text": "255,255,255",
+    "highlight": "255,230,0",
+    "outline": "0,0,0"
+  }
+}

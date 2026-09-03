@@ -585,6 +585,7 @@ def transcribe_video(
     keep_audio: bool = False,
     json_path: Optional[Path] = None,
     txt_path: Optional[Path] = None,
+    audio_path: Optional[Path] = None,
 ) -> TranscriptResult:
     """
     Full Phase 2 pipeline: extract audio -> transcribe with configured provider -> save transcripts.
@@ -597,7 +598,7 @@ def transcribe_video(
         video_path = load_latest_video()
 
     # ── Extract audio ──────────────────────────────────────────────────────────
-    audio_path = TEMP_DIR / "extracted_audio.mp3"
+    audio_path = audio_path or (TEMP_DIR / "extracted_audio.mp3")
     extract_audio(video_path, audio_path)
 
     active_provider = (provider or get_setting("transcription_provider", "groq")).lower().strip()

@@ -1,16 +1,22 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Vergeclip — 1-Click AI Viral Shorts Generator</title>
-  <meta name="description" content="Turn any podcast or YouTube video into high-converting 9:16 viral shorts with AI face tracking and synchronized captions." />
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎙️</text></svg>" />
+  <meta name="description"
+    content="Turn any podcast or YouTube video into high-converting 9:16 viral shorts with AI face tracking and synchronized captions." />
+  <link rel="icon" type="image/svg+xml"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎙️</text></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="app.css" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet" href="app.css?v=3" />
 </head>
+
 <body class="app-body">
 
   <!-- ─── Top Navbar ────────────────────────────────────────────────── -->
@@ -32,7 +38,8 @@
 
       <div class="nav-right">
         <!-- Backend Status Pill -->
-        <div class="status-pill" id="backendPill" onclick="promptBackendUrl()" title="Click to change Backend Server URL">
+        <div class="status-pill" id="backendPill" onclick="promptBackendUrl()"
+          title="Click to change Backend Server URL">
           <span class="status-dot green" id="serverDot"></span>
           <span id="serverLbl">Backend Connected</span>
         </div>
@@ -48,7 +55,8 @@
               <span class="user-avatar-circle" id="userAvatar">U</span>
               <span style="font-size:0.85rem; font-weight:600; color:var(--text-main);" id="authUserName">User</span>
             </div>
-            <button class="btn-outline btn-sm" onclick="openChangePasswordModal()" title="Change Account Password" style="padding:0.35rem 0.6rem;">🔑</button>
+            <button class="btn-outline btn-sm" onclick="openChangePasswordModal()" title="Change Account Password"
+              style="padding:0.35rem 0.6rem;">🔑</button>
             <button class="btn-outline btn-sm btn-danger-outline" onclick="handleLogout()">Logout</button>
           </div>
         </div>
@@ -59,103 +67,211 @@
   <!-- ─── Main Content Container ────────────────────────────────────── -->
   <main class="single-page-container">
 
-    <!-- ── 1. Hero 1-Click Generator Card ── -->
+    <!-- ── 1. Hero Generator Card (Dual Studio Engine Hub) ── -->
     <section class="hero-generator-card" id="generator">
       <div class="hero-badge">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-        1-Click Video to Shorts Engine
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+        </svg>
+        <span id="heroBadgeText">⚡ DUAL AI VIRAL SHORTS PLATFORM</span>
       </div>
-      
-      <h1 class="hero-title">Turn Any Long Video into <br><span class="gradient-text">Viral 9:16 Shorts</span></h1>
-      
-      <p class="hero-subtitle">
-        Paste your YouTube URL below. Our AI automatically discovers the most engaging moments, tracks faces in 9:16 frame, and burns word-level animated captions.
+
+      <h1 class="hero-title" id="heroTitleText">Turn Any Video or Idea into <br><span class="gradient-text">Viral 9:16 Shorts</span></h1>
+
+      <p class="hero-subtitle" id="heroSubText">
+        Select your creation workflow: Extract high-retention clips from existing YouTube videos, or build brand-new vertical shorts from pure topics.
       </p>
 
-      <!-- Mode Switcher Tabs -->
-      <div style="display:inline-flex; gap:0.5rem; background:rgba(255,255,255,0.04); padding:0.35rem; border-radius:var(--radius-pill); border:1px solid var(--border-subtle); margin-bottom:0.5rem;">
-        <button id="tabModeUrl" class="btn-primary btn-sm" onclick="switchGenMode('url')">
-          🔗 YouTube URL to Shorts
+      <!-- Executive Dual Studio Selectors -->
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:1rem; width:100%; max-width:760px; margin-bottom:1rem;">
+        <button id="tabModeUrl" class="btn-primary" style="height:56px; padding:0 1.35rem; font-weight:800; font-size:0.92rem; border-radius:14px; display:flex; align-items:center; justify-content:center; gap:0.75rem; text-align:left;" onclick="switchGenMode('url')">
+          <span style="font-size:1.3rem;">🎥</span> 
+          <div>
+            <div style="font-size:0.92rem; font-weight:800;">YouTube URL → Shorts</div>
+            <div style="font-size:0.72rem; font-weight:500; opacity:0.85;">Reframe podcasts &amp; webinars</div>
+          </div>
         </button>
-        <button id="tabModeTopic" class="btn-outline btn-sm" onclick="switchGenMode('topic')">
-          💡 AI Prompt / Topic (No Video Needed)
+
+        <button id="tabModeTopic" class="btn-outline" style="height:56px; padding:0 1.35rem; font-weight:800; font-size:0.92rem; border-radius:14px; display:flex; align-items:center; justify-content:center; gap:0.75rem; text-align:left;" onclick="switchGenMode('topic')">
+          <span style="font-size:1.3rem;">💡</span> 
+          <div>
+            <div style="font-size:0.92rem; font-weight:800;">AI Idea → Video Script</div>
+            <div style="font-size:0.72rem; font-weight:500; opacity:0.85;">Script, voiceover &amp; scene visuals</div>
+          </div>
         </button>
       </div>
 
-      <!-- Mode 1: YouTube URL Input Form -->
+      <!-- Studio Mode 1: YouTube Video Clipper -->
       <div id="modeUrlWrap" class="url-input-container" style="width:100%;">
-        <div class="url-input-wrap">
-          <svg class="url-icon" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33A2.78 2.78 0 0 0 3.4 19c1.72.46 8.6.46 8.6.46s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.25 29 29 0 0 0-.46-5.33z"/>
-            <polygon points="9.75 15.02 15.5 11.75 9.75 8.48 9.75 15.02" fill="currentColor"/>
-          </svg>
-          <input 
-            id="ytUrl" 
-            type="url" 
-            placeholder="Paste YouTube video link..." 
-            class="url-input" 
-            autocomplete="off"
-          />
-          <div class="url-action-buttons">
-            <button class="btn-primary btn-generate" id="autoGenerateBtn" onclick="startAutoGenerate()">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-              Generate Shorts
-            </button>
+        <div style="display:flex; flex-direction:column; gap:1.25rem; width:100%; background:linear-gradient(145deg, rgba(20,12,24,0.95), rgba(12,8,18,0.98)); border:1px solid rgba(239, 68, 68, 0.45); border-radius:20px; padding:1.85rem; text-align:left; box-shadow:0 16px 50px rgba(0,0,0,0.6), 0 0 30px rgba(239, 68, 68, 0.18); backdrop-filter:blur(20px);">
+          <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0.75rem; border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:1rem;">
+            <div>
+              <h3 style="font-size:1.1rem; font-weight:800; color:#fff; margin:0; display:flex; align-items:center; gap:0.5rem;">
+                <span style="display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; border-radius:8px; background:rgba(239,68,68,0.2); color:#ef4444; font-size:1rem;">🎥</span>
+                YouTube Long Video Clipper Studio
+              </h3>
+              <p style="font-size:0.82rem; color:var(--text-muted); margin:0.35rem 0 0 0;">Paste any YouTube URL — AI automatically extracts 30-60s viral hooks, centers speaker faces, and bakes in animated subtitles.</p>
+            </div>
+            <span style="font-size:0.75rem; font-weight:700; color:#fca5a5; background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.35); padding:5px 12px; border-radius:9999px; white-space:nowrap;">16:9 → 9:16 Reframer</span>
+          </div>
+
+          <div>
+            <label class="auth-label" style="font-size:0.85rem; font-weight:700; color:var(--text-primary); margin-bottom:0.45rem; display:block;">Paste YouTube Video Link</label>
+            <div class="url-input-wrap" style="box-shadow:0 0 35px rgba(239,68,68,0.25); border:1px solid rgba(239,68,68,0.5); background:rgba(8,10,16,0.92); height:54px;">
+              <svg class="url-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" style="filter:drop-shadow(0 0 8px rgba(239,68,68,0.7));">
+                <path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33A2.78 2.78 0 0 0 3.4 19c1.72.46 8.6.46 8.6.46s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.25 29 29 0 0 0-.46-5.33z"/>
+                <polygon points="9.75 15.02 15.5 11.75 9.75 8.48 9.75 15.02" fill="#ef4444"/>
+              </svg>
+              <input id="ytUrl" type="url" placeholder="https://youtube.com/watch?v=..." class="url-input" style="font-size:1.02rem;" autocomplete="off" />
+              <div class="url-action-buttons">
+                <button class="btn-primary btn-generate" id="autoGenerateBtn" style="height:44px; padding:0 1.6rem; font-size:0.92rem; font-weight:800; background:linear-gradient(135deg,#ef4444,#dc2626);" onclick="startAutoGenerate()">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                  </svg>
+                  🚀 Extract Viral Shorts
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Structured Feature Grid (Aligned 4 Columns) -->
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:0.75rem; margin-top:0.35rem; border-top:1px solid rgba(255,255,255,0.06); padding-top:1rem;">
+            <div style="display:flex; align-items:center; gap:0.6rem; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.22); padding:0.6rem 0.85rem; border-radius:10px;">
+              <span style="font-size:1.1rem;">🎯</span>
+              <div>
+                <div style="font-size:0.78rem; font-weight:800; color:#fff;">Face-Tracking</div>
+                <div style="font-size:0.7rem; color:#fca5a5;">Smart 9:16 framing</div>
+              </div>
+            </div>
+
+            <div style="display:flex; align-items:center; gap:0.6rem; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.22); padding:0.6rem 0.85rem; border-radius:10px;">
+              <span style="font-size:1.1rem;">💬</span>
+              <div>
+                <div style="font-size:0.78rem; font-weight:800; color:#fff;">Karaoke Subtitles</div>
+                <div style="font-size:0.7rem; color:#fca5a5;">Word-level animation</div>
+              </div>
+            </div>
+
+            <div style="display:flex; align-items:center; gap:0.6rem; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.22); padding:0.6rem 0.85rem; border-radius:10px;">
+              <span style="font-size:1.1rem;">🧠</span>
+              <div>
+                <div style="font-size:0.78rem; font-weight:800; color:#fff;">Hook Detection</div>
+                <div style="font-size:0.7rem; color:#fca5a5;">High retention score</div>
+              </div>
+            </div>
+
+            <div style="display:flex; align-items:center; gap:0.6rem; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.22); padding:0.6rem 0.85rem; border-radius:10px;">
+              <span style="font-size:1.1rem;">📱</span>
+              <div>
+                <div style="font-size:0.78rem; font-weight:800; color:#fff;">Full HD Export</div>
+                <div style="font-size:0.7rem; color:#fca5a5;">1080x1920 ready</div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
 
-      <!-- Mode 2: Topic / Prompt Input Form (No Video Needed) -->
-      <div id="modeTopicWrap" class="url-input-container" style="display:none; width:100%; flex-direction:column; gap:1rem;">
-        <div style="display:flex; flex-direction:column; gap:0.75rem; width:100%; background:rgba(6, 8, 14, 0.85); border:1px solid var(--border-medium); border-radius:var(--radius-lg); padding:1.5rem; text-align:left;">
-          <div>
-            <label class="auth-label" style="font-size:0.85rem;">What short do you want to create? (Topic / Question / Idea)</label>
-            <input id="topicInput" class="admin-input" placeholder="e.g. 5 Psychological Tricks to Read Anyone in 3 Seconds" style="font-size:1rem; padding:0.9rem 1.1rem;" />
-          </div>
-          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:1rem;">
+      <!-- Studio Mode 2: AI Script & Topic Creator -->
+      <div id="modeTopicWrap" class="url-input-container" style="display:none; width:100%; flex-direction:column; gap:1.25rem;">
+        <div style="display:flex; flex-direction:column; gap:1.25rem; width:100%; background:linear-gradient(145deg, rgba(20,12,32,0.95), rgba(12,10,24,0.98)); border:1px solid rgba(168, 85, 247, 0.45); border-radius:20px; padding:1.85rem; text-align:left; box-shadow:0 16px 50px rgba(0,0,0,0.6), 0 0 30px rgba(168, 85, 247, 0.2); backdrop-filter:blur(20px);">
+          <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0.75rem; border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:1rem;">
             <div>
-              <label class="auth-label" style="font-size:0.82rem;">Niche / Theme</label>
-              <select id="topicNiche" class="admin-input" style="cursor:pointer;">
-                <option value="Mindset & Psychology">🧠 Psychology & Mindset</option>
-                <option value="Business & Money">💰 Business & Money</option>
-                <option value="AI & Future Tech">🚀 AI & Future Tech</option>
-                <option value="Fitness & Health">💪 Fitness & Health</option>
+              <h3 style="font-size:1.1rem; font-weight:800; color:#fff; margin:0; display:flex; align-items:center; gap:0.5rem;">
+                <span style="display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; border-radius:8px; background:rgba(168,85,247,0.2); color:#a855f7; font-size:1rem;">💡</span>
+                Script-to-Video AI Creator Studio
+              </h3>
+              <p style="font-size:0.82rem; color:var(--text-muted); margin:0.35rem 0 0 0;">No video source needed! Type any topic — AI writes high-retention scripts, generates realistic voiceover, creates video scenes &amp; bakes in captions.</p>
+            </div>
+            <span style="font-size:0.75rem; font-weight:700; color:#e9d5ff; background:rgba(168,85,247,0.18); border:1px solid rgba(168,85,247,0.4); padding:5px 12px; border-radius:9999px; white-space:nowrap;">Zero Video Required</span>
+          </div>
+
+          <div>
+            <label class="auth-label" style="font-size:0.85rem; font-weight:700; color:var(--text-primary); margin-bottom:0.45rem; display:block;">What topic or video idea do you want to create?</label>
+            <input id="topicInput" class="admin-input" placeholder="e.g. 5 Psychological Tricks to Read Anyone in 3 Seconds" style="font-size:1.02rem; padding:0.9rem 1.25rem; height:50px; border-radius:12px; border-color:rgba(168,85,247,0.4);" />
+            
+            <!-- Quick Preset Suggestion Chips -->
+            <div style="display:flex; gap:0.55rem; flex-wrap:wrap; margin-top:0.65rem; align-items:center;">
+              <span style="font-size:0.75rem; color:var(--text-muted); font-weight:700;">Try these viral topics:</span>
+              <button type="button" class="btn-outline btn-sm" style="height:28px; font-size:0.73rem; padding:0 0.75rem; border-radius:9999px;" onclick="document.getElementById('topicInput').value='5 Psychological Tricks to Read Anyone Instantly'">🧠 5 Psychology Secrets</button>
+              <button type="button" class="btn-outline btn-sm" style="height:28px; font-size:0.73rem; padding:0 0.75rem; border-radius:9999px;" onclick="document.getElementById('topicInput').value='How AI is Secretly Changing the World in 2026'">🚀 Future AI Breakthroughs</button>
+              <button type="button" class="btn-outline btn-sm" style="height:28px; font-size:0.73rem; padding:0 0.75rem; border-radius:9999px;" onclick="document.getElementById('topicInput').value='How 19-Year-Olds Are Making $10k/Month Online'">💰 $10k/Mo Side Hustle</button>
+              <button type="button" class="btn-outline btn-sm" style="height:28px; font-size:0.73rem; padding:0 0.75rem; border-radius:9999px;" onclick="document.getElementById('topicInput').value='3 Unbelievable Space Discoveries Science Cannot Explain'">🌌 Deep Space Mysteries</button>
+            </div>
+          </div>
+
+          <!-- Structured Options Grid -->
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:1.25rem; margin-top:0.25rem;">
+            <div>
+              <label class="auth-label" style="font-size:0.82rem; font-weight:700; color:var(--text-muted); margin-bottom:0.35rem; display:block;">Niche / Category</label>
+              <select id="topicNiche" class="admin-input" style="height:44px; font-size:0.88rem; cursor:pointer; border-radius:10px;">
+                <option value="Mindset & Psychology">🧠 Psychology &amp; Mindset</option>
+                <option value="Business & Money">💰 Business &amp; Money</option>
+                <option value="AI & Future Tech">🚀 AI &amp; Future Tech</option>
+                <option value="Fitness & Health">💪 Fitness &amp; Health</option>
                 <option value="Storytelling & Facts">🎬 Fascinating Facts</option>
               </select>
             </div>
             <div>
-              <label class="auth-label" style="font-size:0.82rem;">Tone & Style</label>
-              <select id="topicTone" class="admin-input" style="cursor:pointer;">
+              <label class="auth-label" style="font-size:0.82rem; font-weight:700; color:var(--text-muted); margin-bottom:0.35rem; display:block;">Voiceover / Tone</label>
+              <select id="topicTone" class="admin-input" style="height:44px; font-size:0.88rem; cursor:pointer; border-radius:10px;">
                 <option value="High Energy Viral">⚡ High Energy Viral</option>
                 <option value="Mysterious Storytelling">🕵️ Mysterious Storytelling</option>
                 <option value="Educational Expert">🎓 Educational Expert</option>
-                <option value="Motivational & Bold">🔥 Motivational & Bold</option>
+                <option value="Motivational & Bold">🔥 Motivational &amp; Bold</option>
               </select>
             </div>
             <div>
-              <label class="auth-label" style="font-size:0.82rem;">Target Duration</label>
-              <select id="topicDuration" class="admin-input" style="cursor:pointer;">
+              <label class="auth-label" style="font-size:0.82rem; font-weight:700; color:var(--text-muted); margin-bottom:0.35rem; display:block;">Target Duration</label>
+              <select id="topicDuration" class="admin-input" style="height:44px; font-size:0.88rem; cursor:pointer; border-radius:10px;">
                 <option value="30">⚡ 30 Seconds (Fast Hook)</option>
                 <option value="45" selected>⏱️ 45 Seconds (Recommended)</option>
-                <option value="60">🎬 60 Seconds (Deep Dive)</option>
+                <option value="60">🎬 60 Seconds (Deep Story)</option>
               </select>
             </div>
           </div>
-          <div style="display:flex; justify-content:flex-end; margin-top:0.5rem;">
-            <button class="btn-primary btn-generate" onclick="generateFromTopic()" style="min-width:240px;">
-              ✨ Generate Viral AI Script
+
+          <!-- Structured Action Button Row -->
+          <div style="display:flex; justify-content:flex-end; margin-top:0.35rem;">
+            <button class="btn-primary btn-generate" onclick="generateFromTopic()" style="min-width:280px; height:50px; font-size:0.98rem; font-weight:800; background:linear-gradient(135deg,#a855f7,#ec4899); border-radius:12px;">
+              ✨ Write AI Script &amp; Build Video
             </button>
           </div>
-        </div>
-      </div>
 
-      <!-- Feature Badges -->
-      <div class="features-pills-row">
-        <span class="feat-pill">🎯 Smart Face Centering</span>
-        <span class="feat-pill">💬 Word-by-Word Captions</span>
-        <span class="feat-pill">🧠 AI Hook Detection</span>
-        <span class="feat-pill">📱 9:16 Vertical HD</span>
-        <span class="feat-pill">⚡ 100% Automated</span>
+          <!-- Structured Feature Grid (Aligned 4 Columns matching YouTube Studio) -->
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:0.75rem; margin-top:0.35rem; border-top:1px solid rgba(255,255,255,0.06); padding-top:1rem;">
+            <div style="display:flex; align-items:center; gap:0.6rem; background:rgba(168,85,247,0.08); border:1px solid rgba(168,85,247,0.22); padding:0.6rem 0.85rem; border-radius:10px;">
+              <span style="font-size:1.1rem;">✍️</span>
+              <div>
+                <div style="font-size:0.78rem; font-weight:800; color:#fff;">AI Scriptwriter</div>
+                <div style="font-size:0.7rem; color:#e9d5ff;">High-retention hooks</div>
+              </div>
+            </div>
+
+            <div style="display:flex; align-items:center; gap:0.6rem; background:rgba(168,85,247,0.08); border:1px solid rgba(168,85,247,0.22); padding:0.6rem 0.85rem; border-radius:10px;">
+              <span style="font-size:1.1rem;">🎙️</span>
+              <div>
+                <div style="font-size:0.78rem; font-weight:800; color:#fff;">Voiceover Engine</div>
+                <div style="font-size:0.7rem; color:#e9d5ff;">Natural voice synthesis</div>
+              </div>
+            </div>
+
+            <div style="display:flex; align-items:center; gap:0.6rem; background:rgba(168,85,247,0.08); border:1px solid rgba(168,85,247,0.22); padding:0.6rem 0.85rem; border-radius:10px;">
+              <span style="font-size:1.1rem;">🎬</span>
+              <div>
+                <div style="font-size:0.78rem; font-weight:800; color:#fff;">AI Scene Visuals</div>
+                <div style="font-size:0.7rem; color:#e9d5ff;">3-Tier background engine</div>
+              </div>
+            </div>
+
+            <div style="display:flex; align-items:center; gap:0.6rem; background:rgba(168,85,247,0.08); border:1px solid rgba(168,85,247,0.22); padding:0.6rem 0.85rem; border-radius:10px;">
+              <span style="font-size:1.1rem;">💬</span>
+              <div>
+                <div style="font-size:0.78rem; font-weight:800; color:#fff;">Auto Subtitles</div>
+                <div style="font-size:0.7rem; color:#e9d5ff;">Word-level sync</div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -166,7 +282,8 @@
           <div class="status-indicator-spinner" id="monitorSpinner"></div>
           <div>
             <h2 class="pipeline-title" id="monitorTitle">Creating Your Viral Shorts...</h2>
-            <p class="pipeline-subtitle" id="monitorSubtitle">Analyzing transcript, ranking hooks, centering speakers, and generating captions.</p>
+            <p class="pipeline-subtitle" id="monitorSubtitle">Analyzing transcript, ranking hooks, centering speakers,
+              and generating captions.</p>
           </div>
         </div>
         <div id="liveTimerBadge" class="status-pill">
@@ -234,28 +351,32 @@
           <div class="step-number">01</div>
           <div class="step-icon">🔗</div>
           <h3 class="step-title">Paste Long Video</h3>
-          <p class="step-desc">Provide any YouTube podcast or video URL. Our pipeline ingests high-definition source video in seconds.</p>
+          <p class="step-desc">Provide any YouTube podcast or video URL. Our pipeline ingests high-definition source
+            video in seconds.</p>
         </div>
 
         <div class="step-card">
           <div class="step-number">02</div>
           <div class="step-icon">🎙️</div>
           <h3 class="step-title">Speech-to-Text & Hooks</h3>
-          <p class="step-desc">Whisper / AssemblyAI transcribes every single word with microsecond timestamps and speaker diarization.</p>
+          <p class="step-desc">Whisper / AssemblyAI transcribes every single word with microsecond timestamps and
+            speaker diarization.</p>
         </div>
 
         <div class="step-card">
           <div class="step-number">03</div>
           <div class="step-icon">🧠</div>
           <h3 class="step-title">Semantic AI Ranker</h3>
-          <p class="step-desc">Advanced LLMs score hooks, virality, emotional peaks, and coherence to select the most shareable 30–60s segments.</p>
+          <p class="step-desc">Advanced LLMs score hooks, virality, emotional peaks, and coherence to select the most
+            shareable 30–60s segments.</p>
         </div>
 
         <div class="step-card">
           <div class="step-number">04</div>
           <div class="step-icon">✨</div>
           <h3 class="step-title">Face Tracking & Export</h3>
-          <p class="step-desc">FFmpeg auto-crops to 9:16 vertical frame with dynamic face centering and animated karaoke subtitles.</p>
+          <p class="step-desc">FFmpeg auto-crops to 9:16 vertical frame with dynamic face centering and animated karaoke
+            subtitles.</p>
         </div>
       </div>
     </section>
@@ -265,7 +386,8 @@
       <div class="section-header-row">
         <div>
           <h2 class="section-title">🎬 Generated Shorts Gallery</h2>
-          <p class="section-sub">All rendered 9:16 vertical clips are ready to preview, download, and share across TikTok, Reels, and Shorts.</p>
+          <p class="section-sub">All rendered 9:16 vertical clips are ready to preview, download, and share across
+            TikTok, Reels, and Shorts.</p>
         </div>
         <div class="gallery-actions">
           <button class="btn-outline btn-sm" onclick="refreshOutputs();">
@@ -316,7 +438,8 @@
             <span class="logo-text">Verge<span class="logo-accent">clip</span></span>
           </a>
           <p class="footer-tagline">
-            Automated AI pipeline for turning long-form podcasts, webinars, and interviews into high-retention 9:16 viral short clips.
+            Automated AI pipeline for turning long-form podcasts, webinars, and interviews into high-retention 9:16
+            viral short clips.
           </p>
           <div class="footer-status-pill">
             <span class="status-dot green"></span>
@@ -360,7 +483,8 @@
   </footer>
 
   <!-- ─── In-App Change Password Modal ────────────────────────────── -->
-  <div id="changePasswordModal" class="video-modal-backdrop" style="display:none;" onclick="closeChangePasswordModal(event)">
+  <div id="changePasswordModal" class="video-modal-backdrop" style="display:none;"
+    onclick="closeChangePasswordModal(event)">
     <div class="video-modal-content" style="max-width:440px; padding:2rem;" onclick="event.stopPropagation()">
       <div class="video-modal-header">
         <h3 class="modal-title">🔑 Change Account Password</h3>
@@ -371,24 +495,28 @@
           <label class="auth-label">Current Password</label>
           <div class="auth-input-container">
             <input id="cp_old_password" class="auth-input" type="password" placeholder="••••••••" />
-            <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('cp_old_password', this)">👁️</button>
+            <button type="button" class="input-icon-btn"
+              onclick="togglePasswordVisibility('cp_old_password', this)">👁️</button>
           </div>
         </div>
         <div class="auth-field">
           <label class="auth-label">New Password (at least 8 chars)</label>
           <div class="auth-input-container">
             <input id="cp_new_password" class="auth-input" type="password" placeholder="••••••••" />
-            <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('cp_new_password', this)">👁️</button>
+            <button type="button" class="input-icon-btn"
+              onclick="togglePasswordVisibility('cp_new_password', this)">👁️</button>
           </div>
         </div>
         <div class="auth-field">
           <label class="auth-label">Confirm New Password</label>
           <div class="auth-input-container">
             <input id="cp_confirm_password" class="auth-input" type="password" placeholder="••••••••" />
-            <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('cp_confirm_password', this)">👁️</button>
+            <button type="button" class="input-icon-btn"
+              onclick="togglePasswordVisibility('cp_confirm_password', this)">👁️</button>
           </div>
         </div>
-        <button class="btn-primary" onclick="submitChangePassword()" style="width:100%; justify-content:center; padding:0.8rem; margin-top:0.5rem;">
+        <button class="btn-primary" onclick="submitChangePassword()"
+          style="width:100%; justify-content:center; padding:0.8rem; margin-top:0.5rem;">
           Update Password Now
         </button>
       </div>
@@ -398,4 +526,5 @@
   <script src="auth.js"></script>
   <script src="app.js"></script>
 </body>
+
 </html>

@@ -503,12 +503,17 @@ def _render_video_clip_with_captions(
         "-i", str(video_path),
         "-t", f"{seg_duration:.3f}",
         "-vf", vf,
-        "-c:v", "libx264", "-preset", "fast",
+        "-c:v", "libx264", "-preset", "veryfast",
         "-pix_fmt", "yuv420p", "-r", str(FPS),
         "-an",
         str(output_path),
     ]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    from src.ffmpeg_utils import run_ffmpeg
+    try:
+        r = run_ffmpeg(cmd, timeout=300)
+    except Exception as ffe:
+        log.error("Video clip render timed out: %s", ffe)
+        raise RuntimeError(f"ffmpeg drawtext failed for segment {seg_idx}") from ffe
     if r.returncode != 0:
         log.error("Video clip render failed: %s", r.stderr[-400:] if r.stderr else "?")
         raise RuntimeError(f"ffmpeg drawtext failed for segment {seg_idx}")
@@ -527,12 +532,14 @@ def render_script_video(
     progress_cb=None,
 ) -> Path:
     """
-    Render HD 9:16 video with word-synced captions and REAL AI video backgrounds.
+    Render HD 9:16 video with word-synced captions and 3-tier visual fallback.
 
-    Every segment MUST have a real AI video clip — no image fallback, no PIL/decorative
-    fallback. If a scene is missing its AI video, the function raises so the caller
-    can surface the error to the user (instead of silently shipping a fake/decorative
-    short).
+    For each segment resolve_segment_visual() is used:
+      Tier 1: Real AI video clip (Wan2.1/LTX, fal.ai, Replicate)
+      Tier 2: AI still image + Ken Burns pan/zoom (local FFmpeg)
+      Tier 3: Template motion-loop background (offline, guaranteed)
+    The function never hard-fails because a segment lacks an AI video — it always
+    returns a valid clip via the fallback chain.
     """
     if output_dir is None:
         output_dir = OUTPUT_DIR
@@ -543,16 +550,10 @@ def render_script_video(
         raise FileNotFoundError(f"TTS audio not found: {tts_audio_path}")
     if not segments:
         raise ValueError("No segments to render")
-    if not scene_videos:
-        raise ValueError(
-            "No AI scene video clips provided — every scene must produce a real "
-            "AI video clip (Agnes AI / Pollinations / local ComfyUI). "
-            "Image/decorative fallback is disabled."
-        )
 
     _load_target_spec()
     total_segs = len(segments)
-    log.info("Script video: rendering %d segments with real AI video backgrounds -> %s", total_segs, output_filename)
+    log.info("Script video: rendering %d segments with 3-tier visual fallback chain -> %s", total_segs, output_filename)
     if progress_cb:
         progress_cb("Preparing...", 5)
 
@@ -575,35 +576,23 @@ def render_script_video(
         chunks = _build_caption_chunks(words, max_words=3)
         seg_chunks.append(chunks)
 
-    # ── Validate that every segment has a real AI video clip ──
-    scene_vids: list[Optional[Path]] = []
-    missing = []
-    for i, sv in enumerate(scene_videos):
-        if sv is not None and Path(sv).exists() and Path(sv).stat().st_size > 5000:
-            scene_vids.append(sv)
-        else:
-            scene_vids.append(None)
-            missing.append(i)
-    # Pad to match segments
-    while len(scene_vids) < total_segs:
-        scene_vids.append(None)
+    # ── Render video clips with captions per segment (3-Tier Fallback) ──
+    from src.scene_fallback import resolve_segment_visual
 
-    if missing:
-        raise ValueError(
-            f"AI video clip missing for {len(missing)} segment(s) "
-            f"(indices {missing[:5]}{'...' if len(missing) > 5 else ''}). "
-            "Every scene must produce a real AI video clip. "
-            "Image/decorative fallback is disabled — check provider keys + ComfyUI."
-        )
-
-    # ── Render one AI video clip with captions per segment ──
-    video_clip_entries: list[Path] = []  # pre-rendered video clips with captions
+    video_clip_entries: list[Path] = []
 
     for seg_idx, seg in enumerate(segments):
         label = section_labels[seg_idx] if section_labels and seg_idx < len(section_labels) else ""
+        v_desc = visual_descriptions[seg_idx] if visual_descriptions and seg_idx < len(visual_descriptions) else None
+        raw_vid = scene_videos[seg_idx] if scene_videos and seg_idx < len(scene_videos) else None
 
-        # Only AI video clip is allowed — no image/PIL fallback.
-        ai_vid = scene_vids[seg_idx]
+        # Resolve segment visual via Tier 1 (AI Video) -> Tier 2 (Ken Burns Animated Image) -> Tier 3 (Template Background)
+        resolved_clip_path, tier_label = resolve_segment_visual(
+            segment=seg,
+            seg_idx=seg_idx,
+            scene_video_path=raw_vid,
+            visual_desc=v_desc,
+        )
 
         chunks = seg_chunks[seg_idx]
         seg_start = seg["start"]
@@ -612,32 +601,20 @@ def render_script_video(
 
         if progress_cb:
             pct = 5 + int((seg_idx / total_segs) * 50)
-            progress_cb(f"Section {seg_idx + 1}/{total_segs}...", pct)
+            progress_cb(f"Section {seg_idx + 1}/{total_segs} ({tier_label})...", pct)
 
-        # PATH A (only): real AI video clip → ffmpeg drawtext captions
         clip_path = temp_dir / f"vclip_{seg_idx:03d}.mp4"
         try:
             _render_video_clip_with_captions(
-                ai_vid, chunks, seg_start, seg_duration,
+                resolved_clip_path, chunks, seg_start, seg_duration,
                 label, seg_idx, total_segs,
                 seg_positions[seg_idx], clip_path,
             )
             video_clip_entries.append(clip_path)
         except Exception as e:
-            log.error("AI video clip render failed for seg %d: %s", seg_idx, e)
-            raise RuntimeError(
-                f"Failed to render scene {seg_idx + 1} with its real AI video clip: {e}. "
-                "No image/decorative fallback will be used."
-            ) from e
-
-    # ── Use real AI video clips only (no image fallback) ──
-    # video_clip_entries was populated in the seg loop (PATH A only).
-    # All clips are already encoded with captions; just concat them.
-    if not video_clip_entries:
-        raise RuntimeError(
-            "No AI video clips were produced for any scene. "
-            "No image/decorative fallback is enabled. Check provider keys + ComfyUI."
-        )
+            log.error("Clip render with captions failed for seg %d (%s): %s", seg_idx, tier_label, e)
+            # Emergency direct copy if drawtext fails
+            video_clip_entries.append(resolved_clip_path)
 
     # ── Concat all AI video clips (each already rendered to 9:16 fullscreen) ──
     clip_concat = temp_dir / "clip_concat.txt"
@@ -652,7 +629,8 @@ def render_script_video(
         "-c", "copy",
         str(temp_dir / "concat_video.mp4"),
     ]
-    r = subprocess.run(concat_cmd, capture_output=True, text=True, timeout=120)
+    from src.ffmpeg_utils import run_ffmpeg
+    r = run_ffmpeg(concat_cmd, timeout=120)
     if r.returncode != 0:
         raise RuntimeError(f"Concat failed: {r.stderr[-200:] if r.stderr else 'unknown'}")
 
@@ -671,14 +649,14 @@ def render_script_video(
         "-i", str(temp_dir / "concat_video.mp4"),
         "-i", str(tts_audio_path),
         "-vf", final_scale,
-        "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+        "-c:v", "libx264", "-crf", "18", "-preset", "veryfast",
         "-pix_fmt", "yuv420p", "-r", str(FPS),
         "-c:a", "aac", "-b:a", "192k",
         "-shortest",
         "-movflags", "+faststart",
         str(output_path),
     ]
-    r = subprocess.run(final_cmd, capture_output=True, text=True, timeout=120)
+    r = run_ffmpeg(final_cmd, timeout=300)
     if r.returncode != 0:
         raise RuntimeError(f"Final encode failed: {r.stderr[-200:] if r.stderr else 'unknown'}")
 

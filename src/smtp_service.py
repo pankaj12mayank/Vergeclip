@@ -45,7 +45,9 @@ def save_smtp_config(
     set_setting("smtp_host", host)
     set_setting("smtp_port", str(port))
     set_setting("smtp_username", username)
-    set_setting("smtp_password", password)
+    if password:
+        # Only overwrite when a new password was entered; blank keeps existing
+        set_setting("smtp_password", password)
     set_setting("smtp_sender_email", sender_email)
     set_setting("smtp_sender_name", sender_name)
     set_setting("smtp_use_tls", "true" if use_tls else "false")

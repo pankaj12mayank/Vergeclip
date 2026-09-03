@@ -795,6 +795,7 @@ def _generate_energy_based_candidates(
     min_separation: float = CLIP_MIN_SEPARATION,
     overlap_threshold: float = CLIP_OVERLAP_THRESHOLD,
     target_dur: float = 20.0,
+    work_dir: Optional[Path] = None,
 ) -> tuple[list[ScoredClip], list[ScoredClip]]:
     """
     Generate candidate clips from audio-energy peaks and scene dynamics for videos
@@ -835,7 +836,7 @@ def _generate_energy_based_candidates(
 
     norm_rms = None
     if source_video_path and source_video_path.exists():
-        raw_probe = TEMP_DIR / "_energy_probe.raw"
+        raw_probe = (work_dir or TEMP_DIR) / "_energy_probe.raw"
         cmd = [
             FFMPEG_BIN,
             "-y",
@@ -957,6 +958,8 @@ def run_selection(
     weights: Optional[dict] = None,
     json_out: Optional[Path] = None,
     txt_out: Optional[Path] = None,
+    pool_out: Optional[Path] = None,
+    work_dir: Optional[Path] = None,
 ) -> dict:
     """
     Run Phase 3 Clip Selection Pipeline.
@@ -980,9 +983,10 @@ def run_selection(
             top_n=top_n,
             min_separation=min_separation,
             overlap_threshold=overlap_threshold,
+            work_dir=work_dir,
         )
 
-        pool_out = TEMP_DIR / CANDIDATE_POOL_JSON_FILENAME
+        pool_out = pool_out or (TEMP_DIR / CANDIDATE_POOL_JSON_FILENAME)
         _save_json(deduped_clips, meta, pool_out)
         log.info("Saved complete candidate pool -> %s (%d clips)", pool_out, len(deduped_clips))
 
@@ -1057,8 +1061,9 @@ def run_selection(
             top_n=top_n,
             min_separation=min_separation,
             overlap_threshold=overlap_threshold,
+            work_dir=work_dir,
         )
-        pool_out = TEMP_DIR / CANDIDATE_POOL_JSON_FILENAME
+        pool_out = pool_out or (TEMP_DIR / CANDIDATE_POOL_JSON_FILENAME)
         _save_json(deduped_clips, meta, pool_out)
         j_out = json_out or (TEMP_DIR / CANDIDATES_JSON_FILENAME)
         t_out = txt_out or (TEMP_DIR / CANDIDATES_TXT_FILENAME)
@@ -1104,7 +1109,7 @@ def run_selection(
         clip.id = rank
 
     # Save full deduplicated candidate pool to candidate_pool.json
-    pool_out = TEMP_DIR / CANDIDATE_POOL_JSON_FILENAME
+    pool_out = pool_out or (TEMP_DIR / CANDIDATE_POOL_JSON_FILENAME)
     _save_json(deduped_clips, meta, pool_out)
     log.info("Saved complete candidate pool -> %s (%d clips)", pool_out, len(deduped_clips))
 

@@ -200,29 +200,35 @@ def _call_gemini(
     system_prompt: Optional[str] = None,
     model: str = "gemini-3.6-flash",
     max_tokens: int = 200,
+    json_mode: bool = False,
 ) -> str:
-    """Call Google Gemini GenerateContent API and return the response text."""
+    """Call Google Gemini GenerateContent API and return the response text.
+
+    Uses the real ``system_instruction`` field (not a pre-pended user block),
+    so the LLM actually follows the rules instead of echoing the topic into the
+    output. JSON mode is opt-in (off by default) — script/visual prompts are
+    plain structured text, forcing JSON breaks the VISUAL/VOICEOVER format.
+    """
     from src.config import get_setting
     key = get_setting("GOOGLE_API_KEY", "").strip()
     if not key:
         raise RuntimeError(
             "GOOGLE_API_KEY is not set. Add it to your environment or .env file."
         )
-    contents = []
-    if system_prompt:
-        full_prompt = f"{system_prompt}\n\n{prompt}"
-    else:
-        full_prompt = prompt
-    contents.append({"role": "user", "parts": [{"text": full_prompt}]})
-
     payload = json.dumps({
-        "contents": contents,
+        "system_instruction": {
+            "parts": [{"text": system_prompt or ""}]
+        },
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
-            "temperature": 0.1,
+            "temperature": 0.4,
             "maxOutputTokens": max_tokens,
-            "responseMimeType": "application/json",
         },
     }).encode("utf-8")
+    if json_mode:
+        _p = json.loads(payload)
+        _p["generationConfig"]["responseMimeType"] = "application/json"
+        payload = json.dumps(_p).encode("utf-8")
 
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}"

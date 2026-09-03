@@ -197,6 +197,26 @@ class DeviceTrial(Base):
     __table_args__ = (Index("idx_device_id", "device_id"),)
 
 
+class SceneProvider(Base):
+    """Scene Generation (Script-to-Video) provider configuration.
+
+    One active provider at a time. Provider list, active selection, API keys,
+    model names and endpoint/timeout are all stored here (not hardcoded) so the
+    admin UI can switch providers without a redeploy.
+    """
+    __tablename__ = "scene_providers"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider_key = Column(String(50), unique=True, nullable=False)  # local | fal | replicate
+    name = Column(String(100), nullable=False)  # display name
+    api_key = Column(String(500), nullable=True)  # plaintext (matches existing CustomProvider pattern)
+    model_name = Column(String(200), nullable=True)  # e.g. wan-2.1-t2v / kuaishou/kling-video / replicate model id
+    endpoint = Column(String(500), nullable=True)  # local ComfyUI URL, or fal/replicate base URL
+    timeout_seconds = Column(Integer, default=120, nullable=False)
+    is_active = Column(Boolean, default=False, nullable=False)  # only one active at a time
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+
+
 class CustomProvider(Base):
     __tablename__ = "custom_providers"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -465,7 +485,12 @@ def init_db():
                     "- Write visual directions for AI video generation (cinematic, specific, vivid)\n"
                     "- Describe camera angle, lighting, mood, and subject\n"
                     "- Example: 'Wide shot of businessman standing alone in empty office at night, blue lighting'\n"
-                    "- Never write generic visuals like 'relevant B-roll' — be specific\n\n"
+                    "- Never write generic visuals like 'relevant B-roll' — be specific\n"
+                    "- NEVER write visuals about text, typography, zooming on text, animation, or on-screen UI.\n"
+                    "  Every VISUAL must be a REAL filmed scene a text-to-video model can render as live footage\n"
+                    "  (real people, environments, objects, camera motion).\n"
+                    "- NEVER paste the topic/title into a VOICEOVER line — the spoken narration must read naturally,\n"
+                    "  as if a host is talking about the topic, not reciting the prompt.\n\n"
                     "OUTPUT: ONLY the script in the exact format above. No explanations, no commentary."
                 ),
                 "user_template": "Topic: {{topic}}\nNiche: {{niche}}\nTone: {{tone}}\nTarget Duration: {{duration}} seconds\n\nWrite a {{duration}}-second viral script. Adjust all timestamps to match {{duration}} seconds exactly.",
@@ -551,17 +576,11 @@ def init_db():
             },
         ]
 
-        # Update or Insert
+        # Only INSERT new prompts if they don't already exist.
+        # NEVER overwrite existing prompts — user edits must survive server restarts.
         for pdata in rich_prompts:
             existing = db.query(Prompt).filter(Prompt.name == pdata["name"]).first()
-            if existing:
-                existing.system_prompt = pdata["system_prompt"]
-                existing.user_template = pdata["user_template"]
-                existing.version = pdata["version"]
-                existing.temp = pdata["temp"]
-                existing.category = pdata.get("category")
-                existing.is_active = True
-            else:
+            if not existing:
                 p = Prompt(**pdata)
                 db.add(p)
         db.commit()
@@ -627,6 +646,37 @@ def init_db():
             existing_setting = db.query(Setting).filter(Setting.key == skey).first()
             if not existing_setting:
                 db.add(Setting(key=skey, value=sval, is_secret=False))
+        db.commit()
+
+        # ── Scene Generation provider migration ────────────────────────────────
+        # Remove legacy provider settings (Pollinations.ai / Agnes AI / the old
+        # single value in video_gen_provider). Provider state now lives in the
+        # scene_providers table instead of flat settings keys.
+        from src.models import SceneProvider
+        legacy_keys = [
+            "pollinations_api_key", "pollinations_api_key_is_set",
+            "agnes_api_key", "video_gen_provider",
+        ]
+        db.query(Setting).filter(Setting.key.in_(legacy_keys)).delete(synchronize_session=False)
+        db.commit()
+
+        # Seed the three scene-generation providers (seed/insert-only so admin
+        # edits to keys/models survive restarts).
+        scene_seed = [
+            {"provider_key": "local", "name": "Local — Wan2.1 / LTX-Video (your GPU, offline, free)",
+             "api_key": None, "model_name": "wan-2.1-t2v-14b",
+             "endpoint": "http://127.0.0.1:8188", "timeout_seconds": 700, "is_active": False},
+            {"provider_key": "fal", "name": "fal.ai (cloud, pay-as-you-go)",
+             "api_key": None, "model_name": "kuaishou/kling-video/v1/standard/text-to-video",
+             "endpoint": "https://queue.fal.run", "timeout_seconds": 180, "is_active": False},
+            {"provider_key": "replicate", "name": "Replicate (cloud, pay-as-you-go)",
+             "api_key": None, "model_name": "wan-video/wan-2.1-t2v-14b",
+             "endpoint": "https://api.replicate.com/v1", "timeout_seconds": 180, "is_active": False},
+        ]
+        for sp in scene_seed:
+            existing_prov = db.query(SceneProvider).filter(SceneProvider.provider_key == sp["provider_key"]).first()
+            if not existing_prov:
+                db.add(SceneProvider(**sp))
         db.commit()
 
         # Ensure default admin has role admin

@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="app.css" />
+  <link rel="stylesheet" href="app.css?v=3" />
 </head>
 <body class="app-body">
 
@@ -191,23 +191,50 @@
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:1rem; margin-top:1.25rem; padding-top:1rem; border-top:1px solid var(--border-subtle);">
               <div style="display:flex; align-items:center; gap:0.5rem;">
                 <input id="smtp_test_email" class="admin-input" placeholder="Enter recipient email to test..." style="width:260px;" />
-                <button class="btn-outline btn-sm" onclick="testSmtpConnection()">⚡ Test SMTP Email</button>
+                <button class="btn-outline btn-sm" onclick="testSmtpConnection()" style="height:44px; white-space:nowrap;">⚡ Test SMTP Email</button>
               </div>
               <button class="btn-primary btn-sm" onclick="saveSmtpSettings()">💾 Save SMTP Configuration</button>
             </div>
           </div>
 
-          <div class="admin-card">
+          <!-- ── Group 1: Custom AI Providers (LLM) ── -->
+          <div class="admin-card" style="border-left-color:#a855f7;">
             <div class="admin-card-header">
               <div>
-                <h3 class="admin-card-title">🔑 Core API Keys & AI Providers</h3>
-                <p class="admin-card-desc">Configure VideoSailor, AssemblyAI, Google Gemini, and custom OpenAI-compatible AI providers with live connection verification.</p>
+                <h3 class="admin-card-title">🤖 Custom AI Providers (LLM) — Prompts & Ranking</h3>
+                <p class="admin-card-desc">LLM providers for viral hook scoring, script generation & SEO. Active provider is used for all 6 prompt pipelines. Add Nvidia, OpenAI-compatible, Ollama, etc.</p>
               </div>
               <button class="btn-primary btn-sm" onclick="openAddProviderModal()" style="display:inline-flex; align-items:center; gap:0.4rem;">
                 ➕ Add Custom AI Provider
               </button>
             </div>
-            <div id="configKeys" style="display:flex; flex-direction:column; gap:1.25rem;"></div>
+            <div id="customProvidersList" style="display:flex; flex-direction:column; gap:1rem;"></div>
+            <div id="configKeys" style="display:none;"></div>
+          </div>
+
+          <!-- ── Group 2: Transcription Engines (Speech-to-Text) ── -->
+          <div class="admin-card" style="border-left-color:#06b6d4;">
+            <div class="admin-card-header">
+              <div>
+                <h3 class="admin-card-title">🎙️ Transcription Engines (Speech-to-Text)</h3>
+                <p class="admin-card-desc">Groq Whisper FREE (8h/day), AssemblyAI paid, Faster-Whisper local. Keys are managed separately from LLM. Select active engine below or in Pipeline → Audio & Engines.</p>
+              </div>
+            </div>
+            <div id="transcriptionEnginesList" style="display:flex; flex-direction:column; gap:1.25rem;"></div>
+            <div style="margin-top:1rem; padding:0.75rem 1rem; background:rgba(6,182,212,0.08); border:1px solid rgba(6,182,212,0.2); border-radius:8px; font-size:0.82rem; color:var(--text-muted);">
+              ℹ️ Active transcription engine is also selectable in <strong>Pipeline → Audio & Engines → Transcription Engine</strong>. Keys saved here are shared with Pipeline.
+            </div>
+          </div>
+
+          <!-- ── Group 3: Video Engines (Download & Scene Generation) ── -->
+          <div class="admin-card" style="border-left-color:#f59e0b;">
+            <div class="admin-card-header">
+              <div>
+                <h3 class="admin-card-title">🎬 Video Engines (Download & Scene Generation)</h3>
+                <p class="admin-card-desc">VideoSailor for high-speed YouTube downloads (fallback yt-dlp if not set) + Scene Generation providers for Script-to-Video (Local Wan2.1/LTX, fal.ai, Replicate).</p>
+              </div>
+            </div>
+            <div id="videoEnginesList" style="display:flex; flex-direction:column; gap:1.25rem;"></div>
           </div>
 
           <div class="admin-card">
@@ -407,64 +434,157 @@
             </div>
 
             <!-- Scene Generation -->
-            <div class="plane-card" style="border-left-color:#10b981;">
-              <div class="plane-card-head">
-                <h3>🎬 Scene Generation (Script-to-Video)</h3>
-                <p class="plane-card-desc">AI provider that creates cinematic scene backgrounds for Script-to-Video. Only one provider is active at a time.</p>
-              </div>
-              <div id="sceneGenActiveStatus" style="display:none; padding:0.4rem 0.75rem; background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.3); border-radius:6px; margin-top:0.75rem; font-size:0.82rem; color:#10b981;"></div>
-              <div class="plane-field-grid">
-                <div class="plane-field">
-                  <label class="auth-label">Active Provider</label>
-                  <select id="pc_video_gen_provider" class="admin-input" onchange="toggleSceneGenOptions()">
-                    <option value="pollinations">🎬 Pollinations.ai Video (best quality, paid credits)</option>
-                    <option value="agnes">🌸 Agnes AI V2.0 (completely free, unlimited)</option>
-                    <option value="local">🖥️ Local CogVideoX-2B (your GPU, offline)</option>
-                  </select>
-                </div>
-                <div class="plane-field" id="pollinationsKeyWrap">
-                  <label class="auth-label">Pollinations API Key</label>
-                  <div style="display:flex; gap:0.5rem; align-items:center;">
-                    <div class="auth-input-container" style="flex:1;">
-                      <input id="pc_pollinations_api_key" class="admin-input" type="password" placeholder="sk-... (paid credits - best quality)" />
-                      <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('pc_pollinations_api_key', this)" title="Show/Hide Key">👁️</button>
-                    </div>
-                    <button type="button" class="btn-outline btn-sm" style="flex-shrink:0; white-space:nowrap; height:38px;" onclick="testVideoProvider('pollinations','pc_pollinations_api_key')">⚡ Test Key</button>
-                  </div>
-                </div>
-                <div class="plane-field" id="agnesKeyWrap" style="display:none;">
-                  <label class="auth-label">Agnes AI API Key</label>
-                  <div style="display:flex; gap:0.5rem; align-items:center;">
-                    <div class="auth-input-container" style="flex:1;">
-                      <input id="pc_agnes_api_key" class="admin-input" type="password" placeholder="Free at platform.agnes-ai.com" />
-                      <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('pc_agnes_api_key', this)" title="Show/Hide Key">👁️</button>
-                    </div>
-                    <button type="button" class="btn-outline btn-sm" style="flex-shrink:0; white-space:nowrap; height:38px;" onclick="testVideoProvider('agnes','pc_agnes_api_key')">⚡ Test Key</button>
-                  </div>
-                </div>
-                <div class="plane-field" id="localKeyWrap" style="display:none;">
-                  <label class="auth-label">Local CogVideoX-2B (ComfyUI)</label>
-                  <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:0.6rem; font-size:0.78rem; color:var(--text-muted);">
-                    Runs offline on your RTX GPU via ComfyUI at <code>127.0.0.1:8188</code>. Load the CogVideo model once and the system calls it automatically.
-                    <div style="display:flex; gap:0.5rem; align-items:center; margin-top:0.5rem;">
-                      <div class="auth-input-container" style="flex:1;">
-                        <input id="pc_comfyui_url" class="admin-input" type="text" placeholder="http://127.0.0.1:8188" style="font-size:0.78rem;" />
-                      </div>
-                      <button type="button" class="btn-outline btn-sm" style="flex-shrink:0; white-space:nowrap; height:38px;" onclick="testVideoProvider('local',null)">🧪 Check ComfyUI / GPU</button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div class="plane-save-row">
-                <button class="btn-primary btn-sm" onclick="saveSceneGeneration()">💾 Save Scene Generation</button>
+            <div class="plane-card" style="border-left-color:var(--purple-accent); padding:1.6rem 1.8rem;">
+              <div class="plane-card-head" style="margin-bottom:1rem;">
+                <h3 style="font-size:1.15rem; font-weight:800;">🎬 Scene Generation (Script-to-Video)</h3>
+                <p class="plane-card-desc" style="font-size:0.85rem; color:var(--text-muted); margin-top:0.35rem;">
+                  Select and configure high-performance AI video providers for cinematic background scene generation.
+                </p>
               </div>
 
-              <!-- Saved Keys Display -->
-              <div id="savedKeysDisplay" style="margin-top:1rem; display:none;">
-                <div style="font-size:0.82rem; font-weight:600; color:var(--text-primary); margin-bottom:0.5rem;">🔑 Saved API Keys</div>
-                <div id="savedKeysList" style="display:grid; gap:0.5rem;"></div>
+              <!-- Active Status Banner -->
+              <div id="sceneGenActiveStatus" style="display:none; padding:0.65rem 1.1rem; background:rgba(168,85,247,0.12); border:1px solid rgba(168,85,247,0.35); border-radius:10px; margin-bottom:1.25rem; font-size:0.85rem; color:#e9d5ff; box-shadow:0 0 16px rgba(168,85,247,0.15);"></div>
+
+              <!-- Step 1: Active Provider Selection & Activation Bar -->
+              <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.07); border-radius:12px; padding:1.1rem 1.3rem; margin-bottom:1.25rem;">
+                <label class="auth-label" style="font-size:0.82rem; font-weight:700; color:var(--text-primary); margin-bottom:0.5rem; display:block;">Active Scene Video Provider</label>
+                <div style="display:flex; gap:0.85rem; align-items:center; flex-wrap:wrap;">
+                  <div style="flex:1; min-width:280px;">
+                    <select id="pc_scene_provider" class="admin-input" style="width:100%; height:46px;" onchange="toggleSceneGenOptions()">
+                      <option value="local">🖥️ Local — Wan2.1 / LTX-Video (your GPU, offline, free)</option>
+                      <option value="fal">⚡ fal.ai (cloud, pay-as-you-go)</option>
+                      <option value="replicate">🔁 Replicate (cloud, pay-as-you-go)</option>
+                    </select>
+                  </div>
+                  <button class="btn-primary btn-sm" style="height:46px; padding:0 1.6rem; font-size:0.88rem; font-weight:700; white-space:nowrap;" onclick="saveSceneGeneration()">💾 Save &amp; Activate Provider</button>
+                </div>
+              </div>
+
+              <!-- Step 2: Provider Specific Configuration Panel -->
+              <!-- Local Provider Wrap -->
+              <div id="localProvWrap" style="background:rgba(255,255,255,0.015); border:1px solid rgba(255,255,255,0.08); border-radius:12px; padding:1.25rem 1.4rem;">
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.85rem; flex-wrap:wrap; gap:0.5rem;">
+                  <div>
+                    <h4 style="font-size:0.95rem; font-weight:700; color:#fff; margin:0;">🖥️ Local Wan2.1 / LTX-Video (ComfyUI Engine)</h4>
+                    <span style="font-size:0.78rem; color:var(--text-muted);">Runs offline on your RTX GPU via local ComfyUI server. Switch models without redeploying.</span>
+                  </div>
+                </div>
+
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap:1rem; margin-bottom:1.1rem;">
+                  <div>
+                    <label class="auth-label" style="font-size:0.78rem; color:var(--text-muted); margin-bottom:0.35rem; display:block;">ComfyUI Server URL</label>
+                    <input id="pc_local_endpoint" class="admin-input" type="text" placeholder="http://127.0.0.1:8188" style="height:44px; font-size:0.85rem;" title="ComfyUI server URL" />
+                  </div>
+                  <div>
+                    <label class="auth-label" style="font-size:0.78rem; color:var(--text-muted); margin-bottom:0.35rem; display:block;">Model ID / Name</label>
+                    <input id="pc_local_model" class="admin-input" type="text" placeholder="wan-2.1-t2v-14b" style="height:44px; font-size:0.85rem;" title="Wan2.1 / LTX-Video model name" />
+                  </div>
+                  <div>
+                    <label class="auth-label" style="font-size:0.78rem; color:var(--text-muted); margin-bottom:0.35rem; display:block;">Render Timeout (seconds)</label>
+                    <input id="pc_local_timeout" class="admin-input" type="number" min="30" max="2400" placeholder="700" style="height:44px; font-size:0.85rem;" title="Render timeout in seconds" />
+                  </div>
+                </div>
+
+                <div style="display:flex; gap:0.75rem; align-items:center; flex-wrap:wrap;">
+                  <input id="pc_comfyui_url" type="hidden" />
+                  <button type="button" id="btn_comfy_setup_start" class="btn-primary btn-sm" style="height:44px; padding:0 1.4rem; font-size:0.85rem;" onclick="setupAndStartComfyUI()">🔧 Setup &amp; Start Local Wan2.1 / LTX-Video</button>
+                  <button type="button" id="btn_comfy_quick_start" class="btn-secondary btn-sm" style="height:44px; display:none;" onclick="startComfyUI()">🚀 Quick Start</button>
+                  <button type="button" class="btn-outline btn-sm" style="height:44px; padding:0 1.2rem;" onclick="testVideoProvider('local','')">⚡ Test Local Connection</button>
+                </div>
+
+                <!-- Live install / run status panel -->
+                <div id="comfy_setup_panel" style="display:none; margin-top:1rem; background:rgba(0,0,0,0.4); border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:0.85rem; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:0.78rem; color:#cbd5e1; max-height:220px; overflow-y:auto; white-space:pre-wrap;"></div>
+              </div>
+
+              <!-- fal.ai Provider Wrap -->
+              <div id="falProvWrap" style="display:none; background:rgba(255,255,255,0.015); border:1px solid rgba(255,255,255,0.08); border-radius:12px; padding:1.25rem 1.4rem;">
+                <h4 style="font-size:0.95rem; font-weight:700; color:#fff; margin-bottom:0.85rem;">⚡ fal.ai Cloud Video Provider</h4>
+                
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:1rem; margin-bottom:1.1rem;">
+                  <div>
+                    <label class="auth-label" style="font-size:0.78rem; color:var(--text-muted); margin-bottom:0.35rem; display:block;">fal.ai API Key</label>
+                    <div style="display:flex; gap:0.5rem; align-items:center;">
+                      <div class="auth-input-container" style="flex:1;">
+                        <input id="pc_fal_api_key" class="admin-input" type="password" placeholder="fal AI API key" style="height:44px; font-size:0.85rem;" />
+                        <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('pc_fal_api_key', this)" title="Show/Hide Key">👁️</button>
+                      </div>
+                      <button type="button" class="btn-outline btn-sm" style="height:44px; white-space:nowrap;" onclick="testVideoProvider('fal','pc_fal_api_key')">⚡ Test Key</button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label class="auth-label" style="font-size:0.78rem; color:var(--text-muted); margin-bottom:0.35rem; display:block;">Model Endpoint</label>
+                    <input id="pc_fal_model" class="admin-input" type="text" placeholder="kuaishou/kling-video/v1/standard/text-to-video" style="height:44px; font-size:0.85rem;" />
+                  </div>
+
+                  <div>
+                    <label class="auth-label" style="font-size:0.78rem; color:var(--text-muted); margin-bottom:0.35rem; display:block;">Timeout (seconds)</label>
+                    <input id="pc_fal_timeout" class="admin-input" type="number" min="30" max="1200" placeholder="180" style="height:44px; font-size:0.85rem;" />
+                  </div>
+                </div>
+              </div>
+
+              <!-- Replicate Provider Wrap -->
+              <div id="replicateProvWrap" style="display:none; background:rgba(255,255,255,0.015); border:1px solid rgba(255,255,255,0.08); border-radius:12px; padding:1.25rem 1.4rem;">
+                <h4 style="font-size:0.95rem; font-weight:700; color:#fff; margin-bottom:0.85rem;">🔁 Replicate Cloud Video Provider</h4>
+
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:1rem; margin-bottom:1.1rem;">
+                  <div>
+                    <label class="auth-label" style="font-size:0.78rem; color:var(--text-muted); margin-bottom:0.35rem; display:block;">Replicate API Token</label>
+                    <div style="display:flex; gap:0.5rem; align-items:center;">
+                      <div class="auth-input-container" style="flex:1;">
+                        <input id="pc_replicate_api_key" class="admin-input" type="password" placeholder="r8_... Replicate API token" style="height:44px; font-size:0.85rem;" />
+                        <button type="button" class="input-icon-btn" onclick="togglePasswordVisibility('pc_replicate_api_key', this)" title="Show/Hide Key">👁️</button>
+                      </div>
+                      <button type="button" class="btn-outline btn-sm" style="height:44px; white-space:nowrap;" onclick="testVideoProvider('replicate','pc_replicate_api_key')">⚡ Test Token</button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label class="auth-label" style="font-size:0.78rem; color:var(--text-muted); margin-bottom:0.35rem; display:block;">Model Endpoint</label>
+                    <input id="pc_replicate_model" class="admin-input" type="text" placeholder="wan-video/wan-2.1-t2v-14b" style="height:44px; font-size:0.85rem;" />
+                  </div>
+
+                  <div>
+                    <label class="auth-label" style="font-size:0.78rem; color:var(--text-muted); margin-bottom:0.35rem; display:block;">Timeout (seconds)</label>
+                    <input id="pc_replicate_timeout" class="admin-input" type="number" min="30" max="1200" placeholder="180" style="height:44px; font-size:0.85rem;" />
+                  </div>
+                </div>
+              </div>
+
+              <!-- Step 3: Configured Scene Providers Summary Table -->
+              <div id="savedProvidersDisplay" style="margin-top:1.75rem; display:none;">
+                <h4 style="font-size:0.92rem; font-weight:800; color:var(--text-primary); margin-bottom:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                  🔑 Configured Scene Video Providers
+                </h4>
+                <div id="savedProvidersList" style="display:grid; gap:0.75rem;"></div>
               </div>
             </div>
+
+            <!-- Template Backgrounds (Tier 3) -->
+            <div class="plane-card" style="border-left-color:var(--purple-accent); margin-top:1.75rem; padding:1.6rem 1.8rem;">
+              <div class="plane-card-head" style="margin-bottom:1rem;">
+                <h3 style="font-size:1.15rem; font-weight:800;">🎨 Template Motion Backgrounds — Tier 3 Fallback</h3>
+                <p class="plane-card-desc" style="font-size:0.85rem; color:var(--text-muted); margin-top:0.35rem;">
+                  Offline 9:16 vertical motion loops (10s seamless) used ONLY when AI video (Tier 1) and Ken-Burns image (Tier 2) both fail. Guaranteed zero network/GPU dependency.
+                </p>
+              </div>
+
+              <div id="templateBgStatus" style="display:none; padding:0.65rem 1.1rem; border-radius:10px; font-size:0.85rem; margin-bottom:1.25rem;"></div>
+
+              <div id="templateBgGrid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1.25rem;"></div>
+
+              <div style="margin-top:1.35rem; display:flex; gap:0.75rem; flex-wrap:wrap; align-items:center;">
+                <button class="btn-secondary btn-sm" style="height:42px; padding:0 1.25rem;" onclick="loadTemplateBackgrounds()">🔄 Refresh</button>
+                <button class="btn-outline btn-sm" style="height:42px; padding:0 1.25rem;" onclick="setAllTemplatesEnabled(true)">✅ Enable All</button>
+                <button class="btn-outline btn-sm" style="height:42px; padding:0 1.25rem;" onclick="setAllTemplatesEnabled(false)">🚫 Disable All</button>
+              </div>
+
+              <p style="font-size:0.78rem; color:var(--text-muted); margin-top:1.1rem; line-height:1.55; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.06); padding:0.75rem 1rem; border-radius:8px;">
+                <strong>Where used?</strong> <span style="color:#c084fc; font-weight:700;">Script-to-Video ONLY</span> — as Tier 3 fallback in <code>resolve_segment_visual()</code>. YouTube URL → Shorts NEVER uses templates (it reframes your original video). Preview is the raw <code>background.mp4</code> — actual fallback is auto trimmed/looped to segment duration.
+              </p>
+            </div>
+
           </div>
 
           <!-- ── PANE 2: Video Specs & Captions ── -->

@@ -19,11 +19,16 @@ from src.logger import get_logger
 log = get_logger(__name__)
 
 AVAILABLE_VOICES = {
-    "en-US-GuyNeural": "English (US) - Male",
+    # Best natural-sounding US voices (full MPEG3 NN neural quality).
+    # MultiOne/MultiTwo/Davis were dropped by Microsoft's edge-tts endpoint and
+    # now return "No audio was received", so they are not listed here.
+    "en-US-GuyNeural": "English (US) - Male (Default)",
     "en-US-JennyNeural": "English (US) - Female",
+    "en-US-MichelleNeural": "English (US) - Female Comfortable",
     "en-US-AriaNeural": "English (US) - Female (News)",
     "en-GB-RyanNeural": "English (UK) - Male",
     "en-GB-SoniaNeural": "English (UK) - Female",
+    "en-GB-TraceNeural": "English (UK) - Male Conversation",
     "hi-IN-MadhurNeural": "Hindi - Male",
     "hi-IN-SwaraNeural": "Hindi - Female",
     "es-ES-AlvaroNeural": "Spanish - Male",
@@ -35,6 +40,10 @@ AVAILABLE_VOICES = {
     "zh-CN-YunxiNeural": "Chinese - Male",
     "ar-SA-HamedNeural": "Arabic - Male",
 }
+
+# Quality boosts applied to every voice for a fuller, natural delivery.
+DEFAULT_RATE = "+3%"
+DEFAULT_PITCH = "+0Hz"
 
 
 @dataclass

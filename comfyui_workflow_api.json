@@ -1,73 +1,63 @@
 {
   "1": {
-    "class_type": "DownloadAndLoadCogVideoModel",
+    "class_type": "WanVideoModelLoader",
     "inputs": {
-      "model": "THUDM/CogVideoX-2b",
-      "precision": "fp16",
-      "quantization": "disabled",
-      "enable_sequential_cpu_offload": true,
-      "attention_mode": "sdpa",
-      "load_device": "main_device"
+      "ckpt_name": "wan2.1_t2v_14B_bf16.safetensors"
     }
   },
   "2": {
     "class_type": "CLIPLoader",
     "inputs": {
-      "clip_name": "t5xxl_fp8_e4m3fn.safetensors",
-      "type": "sd3"
+      "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "type": "wan"
     }
   },
   "3": {
-    "class_type": "CogVideoTextEncode",
+    "class_type": "WanVideoTextEncode",
     "inputs": {
       "clip": ["2", 0],
-      "prompt": "{prompt}",
-      "strength": 1.0,
-      "force_offload": true
+      "positive": "{prompt}",
+      "negative": "blurry, low quality, distorted, watermark"
     }
   },
   "4": {
-    "class_type": "CogVideoTextEncode",
+    "class_type": "WanVideoVAELoader",
     "inputs": {
-      "clip": ["2", 0],
-      "prompt": "",
-      "strength": 1.0,
-      "force_offload": true
+      "vae_name": "wan_2.1_vae.safetensors"
     }
   },
   "5": {
-    "class_type": "EmptyLatentImage",
+    "class_type": "EmptyWanVideo",
     "inputs": {
+      "length": 49,
+      "batch_size": 1,
       "width": "{width}",
       "height": "{height}",
-      "batch_size": 1
+      "flip_watermark": false
     }
   },
   "6": {
-    "class_type": "CogVideoSampler",
+    "class_type": "WanVideoSampler",
     "inputs": {
       "model": ["1", 0],
       "positive": ["3", 0],
-      "negative": ["4", 0],
+      "negative": ["3", 1],
       "samples": ["5", 0],
-      "num_frames": 49,
-      "steps": 15,
-      "cfg": 6,
+      "width": "{width}",
+      "height": "{height}",
+      "steps": 20,
+      "cfg": 6.0,
+      "shift": 5.0,
       "seed": "{seed}",
-      "scheduler": "CogVideoXDDIM"
+      "scheduler": "unipc",
+      "force_offload": true
     }
   },
   "7": {
-    "class_type": "CogVideoDecode",
+    "class_type": "WanVideoDecode",
     "inputs": {
-      "vae": ["1", 1],
-      "samples": ["6", 0],
-      "enable_vae_tiling": true,
-      "tile_sample_min_height": 240,
-      "tile_sample_min_width": 360,
-      "tile_overlap_factor_height": 0.2,
-      "tile_overlap_factor_width": 0.2,
-      "auto_tile_size": true
+      "vae": ["4", 0],
+      "samples": ["6", 0]
     }
   },
   "8": {
@@ -76,7 +66,7 @@
       "images": ["7", 0],
       "filename_prefix": "vergeclip",
       "codec": "vp9",
-      "fps": 8,
+      "fps": 16,
       "crf": 30
     }
   }

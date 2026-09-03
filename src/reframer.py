@@ -330,7 +330,8 @@ def render_reframed_video(
         str(out_path),
     ]
     log.info("Encoding reframed video with FFmpeg…")
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    from src.ffmpeg_utils import run_ffmpeg
+    result = run_ffmpeg(cmd, timeout=600)
     if result.returncode != 0:
         raise RuntimeError(
             f"FFmpeg mux failed.\nCommand: {' '.join(cmd)}\nStderr:\n{result.stderr}"
